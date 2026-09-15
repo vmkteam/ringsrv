@@ -1,0 +1,37 @@
+# The config for running the image locally (`make docker-run`).
+#
+# It differs from local.toml only in paths: inside the container the data lives
+# on the /data volume — the same place an orchestrator keeps it — and the target
+# catalogue arrives by mounting cfg/. A production config is rendered by the
+# job and never ends up in the image.
+
+[Server]
+Host    = "0.0.0.0"
+Port    = 8085
+IsDevel = true
+BaseURL = "http://localhost:8085"
+
+[Catalog]
+Path = "/opt/ringsrv/cfg/targets.toml"
+
+[Storage]
+ReposDir     = "/data/repos"
+WorktreesDir = "/data/worktrees"
+MaxDiskBytes = 10737418240
+# The engine ships inside the image: docker-run is, among other things, a check
+# that it is there and starts.
+ASTEngine = true
+
+[Limits]
+UpstreamTimeout = "20s"
+JQTimeout       = "2s"
+MaxBytes        = 32768
+MaxConcurrent   = 8       # a semaphore for the whole instance; an api_call batch takes at most 4 of it
+DBTimeout       = "15s"    # a database query, both on the server and in the context; a target may set its own
+DBMaxRows       = 200      # rows in a db_query answer when the target sets no MaxRows
+
+[RateLimit]
+PerUserRPM        = 0
+PerUserConcurrent = 0
+GlobalConcurrent  = 0
+CostBudgetPerHour = "0s"

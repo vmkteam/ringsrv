@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":1,"result":{"status":"success","data":{"resultType":"vector","result":[{"metric":[{"name":"__name__","value":"topsrv_load_average"},{"name":"instance","value":"db1"},{"name":"interval","value":"1m"}],"values":[{"timestamp":1788790100,"value":"0.28"}]}]}}}

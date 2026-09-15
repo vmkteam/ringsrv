@@ -1,0 +1,246 @@
+# The catalogue the pkg/rpc tests are built on. It carries the shape a contour
+# has — a prod Env, one profile per system, two databases, three roles and two
+# repositories — while the hosts are example.com and the tokens are literals.
+#
+# It is a fixture and not cfg/targets.toml.dist on purpose. The tests here are
+# about the surface the tools present, and a shipped catalogue changes with the
+# infrastructure: pointing them at it made an edit to a target break a test
+# about pagination, and left the example in cfg/ unable to be anything but a
+# copy of one contour.
+
+Env = "prod"
+
+[Defaults]
+Headers = ["Authorization: Basic cmluZ3NydjpwYXNzd29yZA=="]
+
+[Profiles.prom]
+Description  = "prod · Prometheus: метрики сервисов"
+BaseURL      = "https://prometheus.example.com"
+AllowMethods = ["GET"]
+AllowPaths   = [
+  "^/api/v1/(query|query_range|labels|series)$",
+  "^/api/v1/label/[^/]+/values$",
+  "^/api/v1/status/buildinfo$",
+]
+AllowQueryParams = ["query", "time", "timeout", "start", "end", "step>=15s", "limit", "match[]", "lookback_delta"]
+DefaultJQ    = '.data | if type == "object" and has("result") then .result else . end'
+TimeParams   = ["start", "end", "time"]
+TimeFormat   = "unix"
+
+[Profiles.grafana]
+Description        = "prod · Grafana: дашборды, datasources, аннотации; логи через POST /api/ds/query"
+BaseURL            = "https://grafana.example.com"
+SkipDefaultHeaders = true
+Headers            = ["Authorization: Bearer grafana-token"]
+AllowMethods       = ["GET", "POST"]
+AllowPaths         = [
+  "^/api/search$",
+  "^/api/health$",
+  "^/api/datasources$",
+  "^/api/datasources/uid/[\\w-]+$",
+  "^/api/datasources/uid/[\\w-]+/resources/(api/v1/)?(labels|series|metadata|label/[^/]+/values)$",
+  "^/api/dashboards/uid/[\\w-]+$",
+  "^/api/annotations$",
+  "POST ^/api/ds/query$",
+]
+ReadOnlyPost       = true
+
+[Profiles.sentry]
+Description        = "prod · Sentry: issues, события, релизы"
+BaseURL            = "https://sentry.example.com"
+SkipDefaultHeaders = true
+Headers            = ["Authorization: Bearer sentry-token"]
+AllowMethods       = ["GET"]
+Query              = ["environment=production"]
+AllowPaths         = [
+  "^/api/0/organizations/$",
+  "^/api/0/organizations/[\\w-]+/(issues|projects|releases)/",
+  "^/api/0/issues/\\d+(/events/latest)?/$",
+  "^/api/0/projects/[\\w-]+/[\\w-]+/(issues|events)/",
+]
+DefaultJQ          = "if type==\"array\" and (.[0]|type==\"object\" and has(\"culprit\")) then [.[] | {id, title, culprit, count, userCount, firstSeen, lastSeen}] else . end"
+Redact             = "warn"
+RedactRules        = ["email", "phone", "card", "token", "jwt", "pem", "ip"]
+
+[Profiles.nomad]
+Description        = "prod · Nomad: джобы, аллокации, ноды"
+BaseURL            = "https://nomad.example.com"
+SkipDefaultHeaders = true
+Headers            = ["X-Nomad-Token: nomad-token"]
+AllowMethods       = ["GET"]
+AllowPaths         = [
+  "^/v1/(status/leader|jobs|allocations|nodes)$",
+  "^/v1/agent/health$",
+  "^/v1/job/[\\w-]+((/|%2[Ff])(dispatch|periodic)-[\\w-]+)?(/allocations|/deployments|/evaluations|/summary|/versions)?$",
+  "^/v1/allocation/[\\w-]+$",
+  "^/v1/node/[\\w-]+$",
+]
+AllowQueryParams   = ["namespace", "region", "prefix", "filter", "meta", "all", "diffs", "resources", "task_states", "os", "type", "per_page", "next_token", "reverse", "stale"]
+
+[Profiles.gitlab]
+Description        = "prod · GitLab: проекты, файлы, коммиты, MR, пайплайны, jobs"
+BaseURL            = "https://git.example.com"
+SkipDefaultHeaders = true
+Headers            = ["PRIVATE-TOKEN: gitlab-token"]
+AllowMethods       = ["GET"]
+AllowPaths         = [
+  "^/api/v4/version$",
+  "^/api/v4/projects/\\d+$",
+  "^/api/v4/projects/\\d+/repository/files/[^/]+/raw$",
+  "^/api/v4/projects/\\d+/repository/(tree|compare|commits|branches|tags)$",
+  "^/api/v4/projects/\\d+/repository/branches/[^/]+$",
+  "^/api/v4/projects/\\d+/repository/commits/[0-9a-f]+(/diff)?$",
+  "^/api/v4/projects/\\d+/merge_requests$",
+  "^/api/v4/projects/\\d+/merge_requests/\\d+(/changes|/diffs|/notes|/commits|/pipelines)?$",
+  "^/api/v4/projects/\\d+/pipelines$",
+  "^/api/v4/projects/\\d+/pipelines/\\d+(/jobs)?$",
+  "^/api/v4/projects/\\d+/jobs/\\d+(/trace)?$",
+  "^/api/v4/projects/\\d+/search$",
+]
+
+[Profiles.youtrack]
+Description        = "prod · YouTrack: задачи, база знаний, проекты"
+BaseURL            = "https://bugs.example.com"
+SkipDefaultHeaders = true
+Headers            = ["Authorization: Bearer youtrack-token"]
+AllowMethods       = ["GET"]
+AllowPaths         = [
+  "^/api/issues(/[A-Z]+-\\d+)?$",
+  "^/api/articles(/([A-Z]+-A-\\d+|\\d+-\\d+))?$",
+  "^/api/admin/projects$",
+]
+AllowQueryParams   = ["fields", "query", "$top<=200", "$skip", "customFields"]
+
+[Profiles.slack]
+Description        = "prod · Slack: поиск сообщений и тредов в публичных каналах"
+BaseURL            = "https://slack.example.com"
+SkipDefaultHeaders = true
+Headers            = ["Authorization: Bearer slack-token"]
+AllowMethods       = ["GET"]
+AllowPaths         = [
+  "^/api/search\\.messages$",
+  "^/api/conversations\\.replies$",
+  "^/api/conversations\\.list$",
+  "^/api/conversations\\.history$",
+  "^/api/users\\.info$",
+]
+AllowQueryParams   = ["query", "channel", "ts", "oldest", "latest", "limit<=100", "cursor", "user", "types", "sort", "sort_dir", "inclusive", "highlight"]
+TimeParams         = ["oldest", "latest"]
+TimeFormat         = "unix"
+
+[Profiles.topsrv]
+Description     = "prod · topsrv: хосты, метрики, алерты, CVE, логи nginx; JSON-RPC в body"
+BaseURL         = "https://topsrv.example.com"
+SkipDefaultHeaders = true
+Headers         = ["Authorization: Bearer topsrv-token"]
+AllowMethods    = ["POST"]
+AllowPaths      = ["POST ^/api/v1/rpc/$"]
+ReadOnlyPost    = true
+AllowRPCMethods = [
+  "meta.whoami",
+  "host.list", "host.get", "host.summary",
+  "metric.query", "metric.queryRange",
+  "alert.rules", "alert.list",
+  "inventory.hosts", "inventory.findings",
+  "botlog.search",
+  "weblog.search", "weblog.summary", "weblog.top",
+  "weblog.networks", "weblog.blockImpact",
+]
+TimeBodyParams  = [
+  "params.start", "params.end",
+  "params.filter.from:rfc3339", "params.filter.to:rfc3339",
+]
+TimeFormat      = "unix"
+
+[Databases.app-pg]
+Description   = "prod · PostgreSQL, реплика apisrv: заказы, платежи; enum'ы (statusId) — в коде, см. code у db_introspect"
+Driver        = "postgres"
+Addr          = "db-replica.example.com:5432"
+Database      = "app"
+User          = "ringsrv_ro"
+Password      = "ro-password"
+Schemas       = ["public", "billing"]
+Repo          = "apisrv"
+Redact        = "redact"
+RedactRules   = ["email", "phone"]
+MaxRows       = 200
+Timeout       = "15s"
+MaxConcurrent = 2
+
+[Databases.app-pg.SchemaRepos]
+public  = ["apisrv", "tpsrv"]
+billing = ["tpsrv"]
+
+[Databases.events-ch]
+Description = "prod · ClickHouse: события, обезличено; now() - INTERVAL 2 HOUR, у ReplacingMergeTree — FINAL"
+Driver      = "clickhouse"
+Addr        = "clickhouse.example.com:9000"
+Database    = "events"
+User        = "ringsrv"
+Password    = "ro-password"
+Redact      = "off"
+Repo        = ["apisrv", "tpsrv"]
+
+[Roles.viewer]
+Description = "Чтение метрик и логов"
+Groups      = ["ringsrv-users"]
+Tools       = ["api_call", "repo_map"]
+Targets     = ["grafana", "prom", "nomad", "sentry", "topsrv"]
+
+[Roles.developer]
+Description = "Чтение всего + код, история и данные"
+Groups      = ["ringsrv-developers"]
+Tools       = ["api_call", "repo_map", "code_read", "code_search", "code_history", "code_refs", "blast_radius", "why", "db_query", "db_introspect"]
+Targets     = ["grafana", "prom", "sentry", "nomad", "gitlab", "youtrack", "slack", "topsrv", "app-pg", "events-ch"]
+Repos       = ["*"]
+
+[Roles.oncall]
+Description = "Дежурный: всё чтение"
+Groups      = ["ringsrv-oncall"]
+Tools       = ["*"]
+Targets     = ["*", "app-pg", "events-ch"]
+Repos       = ["*"]
+
+[Repos.apisrv]
+GitLabProject = 42
+Description   = """
+API заказов. Слои: db → domain → rpc.
+Грабли: очередь платежей не терпит рестарта без дренажа; общая база с tpsrv.
+"""
+CloneURL      = "https://git.example.com/example/apisrv.git"
+CloneTarget   = "gitlab"
+DefaultBranch = "master"
+Refspec       = ["+refs/heads/*:refs/remotes/origin/*"]
+Tags          = false
+SentrySlug    = "apisrv"
+NomadJob      = "apisrv"
+PromJob       = "apisrv"
+IssueTarget   = "youtrack"
+Exclude       = ["vendor/", "node_modules/", "*.pem", ".env*", "id_rsa*"]
+TaskIDRegexp  = "^([A-Z]+-\\d+)"
+
+[Repos.apisrv.Layers]
+db     = "pkg/db"
+domain = "pkg/orders"
+rpc    = "pkg/rpc"
+
+[Repos.tpsrv]
+GitLabProject = 43
+Description   = """
+Биллинг. Слои: db → domain → rpc. Владеет схемой billing в app-pg.
+"""
+CloneURL      = "https://git.example.com/example/tpsrv.git"
+CloneTarget   = "gitlab"
+DefaultBranch = "master"
+Tags          = false
+SentrySlug    = "tpsrv"
+NomadJob      = "tpsrv"
+PromJob       = "tpsrv"
+IssueTarget   = "youtrack"
+Exclude       = ["vendor/", "node_modules/", "*.pem", ".env*", "id_rsa*"]
+TaskIDRegexp  = "^([A-Z]+-\\d+)"
+
+[Repos.tpsrv.Layers]
+db     = "pkg/db"
+domain = "pkg/billing"
+rpc    = "pkg/rpc"

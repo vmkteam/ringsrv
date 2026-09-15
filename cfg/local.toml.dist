@@ -1,0 +1,77 @@
+# A local instance. `make init` copies this file to cfg/local.toml (which is in
+# .gitignore) — edit the copy, not this reference.
+
+[Server]
+Host    = "localhost"
+Port    = 8075
+IsDevel = true
+BaseURL = "http://localhost:8075"
+
+[Sentry]
+DSN         = ""
+Environment = "local"
+
+# OIDC. The verifier is generic — discovery plus JWKS — so any provider will do.
+# An empty Issuer turns JWT validation off entirely: /mcp then runs on the
+# ApiKeys below, or on no authorization at all. For local development only.
+# Audience, when set, must match Server.BaseURL byte for byte.
+[OIDC]
+Issuer        = ""
+ClientID      = ""
+Audience      = ""
+RequiredRoles = []
+Required      = false
+GroupsClaim   = "groups"
+
+# The target catalogue: targets, roles, repositories and the contour (Env).
+# Changes are applied by restarting the service — there is no reload on signal.
+# `make init` puts cfg/targets.toml next to this file, from the .dist.
+[Catalog]
+Path      = "cfg/targets.toml"
+
+# Clones, worktrees and AST indexes.
+#
+# These paths are deliberately outside the project directory: a worktree holds
+# somebody else's code at a particular commit, and any tool that walks the
+# service directory — a formatter, a linter, an IDE — will rewrite that code.
+# `golangci-lint fmt` once reformatted 213 files of a checked-out release this
+# way, and answers about the code stopped matching the commit they named.
+[Storage]
+ReposDir     = "/tmp/ringsrv-data/repos"
+WorktreesDir = "/tmp/ringsrv-data/worktrees"
+MaxDiskBytes = 5_368_709_120   # 5 GB
+# The AST engine is a separate binary, code-graph-mcp: the image installs it
+# from a release, locally it comes from npm i -g @sdsrs/code-graph. The service
+# refuses to start when this is enabled and the binary is missing; a disabled
+# engine leaves code_refs and blast_radius with a clear refusal while the other
+# tools keep working.
+ASTEngine    = true
+# ASTBin     = "code-graph-mcp"   # empty = taken from PATH
+
+[Limits]
+UpstreamTimeout = "20s"
+JQTimeout       = "2s"
+MaxBytes        = 32768   # default, overridden per target
+MaxConcurrent   = 8
+DBTimeout       = "15s"    # a database query, both on the server and in the context; a target may set its own
+DBMaxRows       = 200      # rows in a db_query answer when the target sets no MaxRows
+
+
+# Rate limit — a token bucket on Principal.UserID, reset by a restart.
+# Every limit ≤0 is disabled independently. Rarely needed locally.
+# [RateLimit]
+# PerUserRPM        = 60
+# PerUserConcurrent = 3
+# GlobalConcurrent  = 10
+# CostBudgetPerHour = "5m"
+
+# API keys (sha256 in the config, the key itself at the client).
+# To issue one: openssl rand -hex 32 → hand it to the user → put sha256(key)
+# here. The "sha256:" prefix is optional, both spellings are accepted.
+# Groups are mandatory: access is granted by group, and a key without groups
+# authenticates successfully and then gets a 403 on every call.
+# [[ApiKeys]]
+# UserID    = "some.user"
+# KeyHash   = "sha256:7a3e..."
+# Groups    = ["ringsrv-users"]
+# ExpiresAt = 2027-12-31T23:59:59Z

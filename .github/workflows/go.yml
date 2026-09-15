@@ -1,0 +1,33 @@
+name: Go
+
+on:
+  push:
+    tags:
+      - v*
+    branches:
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+
+      - name: Build
+        run: go build -mod=vendor ./...
+
+      # The database clients and the live rpc test only run when
+      # RINGSRV_TEST_PG / RINGSRV_TEST_CH point at real stands; without those
+      # variables they skip themselves, so no service containers are needed.
+      - name: Test
+        run: go test -mod=vendor -test.short ./...

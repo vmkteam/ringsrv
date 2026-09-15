@@ -1,0 +1,15 @@
+# project service name
+NAME := ringsrv
+
+# add -race to GOFLAGS if RACE=1
+RACE=0
+
+# Authentik login for `make token` (defaults to $USER)
+# TOKEN_USER := ringsrv
+
+# Live tests for the database clients: without these variables the pkg/db and
+# pkg/chdb packages are skipped. The DSN is a user allowed to create roles and
+# schemas on a local stand; the fixtures create ringsrv_test_ro and
+# ringsrv_test_rw themselves.
+# export RINGSRV_TEST_PG := postgres://$(USER)@127.0.0.1:5432/app?sslmode=disable
+# export RINGSRV_TEST_CH := clickhouse://default:@127.0.0.1:9000/app

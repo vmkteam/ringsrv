@@ -1,0 +1,36 @@
+[
+  {
+    "ID": "46a86e30-6578-61cd-f292-ca37776af114",
+    "JobID": "scanner-semgrep/dispatch-1788329644-30088e26",
+    "JobVersion": 8,
+    "Name": "scanner-semgrep/dispatch-1788329644-30088e26.semgrep[0]",
+    "Namespace": "default",
+    "TaskGroup": "semgrep",
+    "NodeName": "acme-dev-node4",
+    "NodeID": "3802dfa7-d6cd-664d-9dec-da63ac9cded0",
+    "EvalID": "930a545b-0914-38b2-7e4d-d01bdfbbde3d",
+    "ClientStatus": "failed",
+    "ClientDescription": "Failed tasks",
+    "DesiredStatus": "stop",
+    "CreateTime": 1788329651439128404,
+    "ModifyTime": 1788330074233876390,
+    "TaskStates": null
+  },
+  {
+    "ID": "7a2fdd5b-a97f-d850-1cfc-8451ae0d2451",
+    "JobID": "scanner-semgrep/dispatch-1788330094-ae51ffaa",
+    "JobVersion": 8,
+    "Name": "scanner-semgrep/dispatch-1788330094-ae51ffaa.semgrep[0]",
+    "Namespace": "default",
+    "TaskGroup": "semgrep",
+    "NodeName": "acme-dev-node4",
+    "NodeID": "3802dfa7-d6cd-664d-9dec-da63ac9cded0",
+    "EvalID": "2b6325cf-40f7-6fc9-61b2-6a3b8df09080",
+    "ClientStatus": "failed",
+    "ClientDescription": "Failed tasks",
+    "DesiredStatus": "stop",
+    "CreateTime": 1788330094038156483,
+    "ModifyTime": 1788330143492221659,
+    "TaskStates": null
+  }
+]

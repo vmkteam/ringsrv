@@ -1,0 +1,14 @@
+.idea
+.vscode
+.DS_Store
+cfg/local.toml
+cfg/targets.toml
+cfg/docker.toml
+coverage.txt
+coverage.xml
+run.log
+Makefile.mk
+/ringsrv
+
+# Mirrors, worktrees and AST indexes of a local instance (Storage.* of cfg/local.toml).
+tmp/

@@ -1,0 +1,127 @@
+[
+  {
+    "ID": "apisrv",
+    "Name": "apisrv",
+    "Namespace": "default",
+    "ParentID": "",
+    "Type": "service",
+    "Status": "running",
+    "Stop": false,
+    "Priority": 50,
+    "SubmitTime": 1788192481284870447,
+    "JobSummary": {
+      "JobID": "apisrv",
+      "Summary": {
+        "apisrv": {
+          "Complete": 907,
+          "Failed": 136,
+          "Lost": 0,
+          "Queued": 0,
+          "Running": 1,
+          "Starting": 0,
+          "Unknown": 0
+        }
+      }
+    }
+  },
+  {
+    "ID": "authentik-proxy",
+    "Name": "authentik-proxy",
+    "Namespace": "default",
+    "ParentID": "",
+    "Type": "service",
+    "Status": "running",
+    "Stop": false,
+    "Priority": 50,
+    "SubmitTime": 1784754767611970465,
+    "JobSummary": {
+      "JobID": "authentik-proxy",
+      "Summary": {
+        "authentik-proxy": {
+          "Complete": 19,
+          "Failed": 15,
+          "Lost": 1,
+          "Queued": 0,
+          "Running": 1,
+          "Starting": 0,
+          "Unknown": 0
+        }
+      }
+    }
+  },
+  {
+    "ID": "discovery/dispatch-1788329080-dd914b08",
+    "Name": "discovery/dispatch-1788329080-dd914b08",
+    "Namespace": "default",
+    "ParentID": "discovery",
+    "Type": "batch",
+    "Status": "dead",
+    "Stop": false,
+    "Priority": 50,
+    "SubmitTime": 1788329080247475507,
+    "JobSummary": {
+      "JobID": "discovery/dispatch-1788329080-dd914b08",
+      "Summary": {
+        "scan": {
+          "Complete": 1,
+          "Failed": 0,
+          "Lost": 0,
+          "Queued": 0,
+          "Running": 0,
+          "Starting": 0,
+          "Unknown": 0
+        }
+      }
+    }
+  },
+  {
+    "ID": "discovery/dispatch-1788329260-6d21438f",
+    "Name": "discovery/dispatch-1788329260-6d21438f",
+    "Namespace": "default",
+    "ParentID": "discovery",
+    "Type": "batch",
+    "Status": "dead",
+    "Stop": false,
+    "Priority": 50,
+    "SubmitTime": 1788329260766259449,
+    "JobSummary": {
+      "JobID": "discovery/dispatch-1788329260-6d21438f",
+      "Summary": {
+        "scan": {
+          "Complete": 1,
+          "Failed": 0,
+          "Lost": 0,
+          "Queued": 0,
+          "Running": 0,
+          "Starting": 0,
+          "Unknown": 0
+        }
+      }
+    }
+  },
+  {
+    "ID": "discovery/dispatch-1788331900-264e4212",
+    "Name": "discovery/dispatch-1788331900-264e4212",
+    "Namespace": "default",
+    "ParentID": "discovery",
+    "Type": "batch",
+    "Status": "dead",
+    "Stop": false,
+    "Priority": 50,
+    "SubmitTime": 1788331900741856956,
+    "JobSummary": {
+      "JobID": "discovery/dispatch-1788331900-264e4212",
+      "Summary": {
+        "scan": {
+          "Complete": 1,
+          "Failed": 0,
+          "Lost": 0,
+          "Queued": 0,
+          "Running": 0,
+          "Starting": 0,
+          "Unknown": 0
+        }
+      }
+    }
+  }
+]

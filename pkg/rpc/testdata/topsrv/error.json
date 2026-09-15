@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":1,"error":{"code":400,"message":"bad_query","data":"{\"status\":\"error\",\"errorType\":\"400\",\"error\":\"labelFilterExpr: unexpected token \\\"\\\"; want \\\"ident\\\"\"}"}}

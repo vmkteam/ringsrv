@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","id":1,"result":{"status":"success","data":{"resultType":"matrix","result":[{"metric":[{"name":"instance","value":"db1"}],"values":[{"timestamp":1788786500,"value":"0.49"},{"timestamp":1788786800,"value":"0.45"},{"timestamp":1788787100,"value":"0.51"}]}]}}}

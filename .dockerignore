@@ -1,0 +1,21 @@
+# The build context is copied wholesale by `COPY . /build`, and without this
+# file that means the 700 MB of .git and whatever local mirrors and worktrees
+# happen to live in tmp/ — gigabytes shipped to the daemon to compile a binary
+# that needs none of it.
+.git
+.gitignore
+tmp/
+coverage.txt
+ringsrv
+
+# Local configuration: the real one is rendered by Nomad into the allocation,
+# and a laptop's cfg/local.toml has no business inside an image.
+cfg/local.toml
+cfg/targets.toml
+
+# The markdown the binary embeds lives in pkg/ring/md/md, not here.
+docs/
+
+deployments/
+Makefile.mk
+*.md

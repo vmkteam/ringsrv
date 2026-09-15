@@ -1,0 +1,291 @@
+# targets.toml — the catalogue of targets, roles and repositories.
+#
+# This is an example, not a deployment: the hosts are example.com and the
+# credentials are literal placeholders. `make init` copies it to cfg/targets.toml
+# (which is in .gitignore) — edit the copy. cfg/README.md is the reference for
+# every field; this file is the shape of a working catalogue.
+#
+# The catalogue is validated as a whole at startup and the service refuses to
+# start when anything in it is wrong: a half-loaded catalogue reads to a user
+# as a permissions problem and gets debugged from the wrong end of the wire.
+#
+# The rules that are checked, in short:
+#   • every AllowPaths entry is a regexp anchored with ^ and ended explicitly:
+#     `$` for an exact path, `/` for a subtree. A "POST " prefix binds the
+#     pattern to one method; on a ReadOnlyPost profile an unprefixed pattern is
+#     GET only;
+#   • the path is checked decoded as well: %2e%2e is "..";
+#   • BaseURL is https (http only for loopback and *.service.consul), no path;
+#   • any method beyond GET needs Write = true or ReadOnlyPost = true;
+#   • Roles.*.Targets and Tools name things that exist;
+#   • samples of merge, delete, deploy, annotation creation and datasource proxy
+#     must not pass any pattern;
+#   • every profile Description starts with Env — the contour is read first;
+#   • [Databases.*]: the name does not collide with a profile, Addr is
+#     host:port, Redact is named for postgres, a "*" in Roles.*.Targets does not
+#     expand to databases — they are named explicitly.
+
+Env = "dev"
+
+# Headers added to every request to every profile. This is where the pass
+# through a contour-wide forward-auth goes (Authentik, oauth2-proxy, a gateway
+# header): declared once, because otherwise the eighth target gets added
+# without it. A host with an authorization of its own sets
+# SkipDefaultHeaders = true and its own header instead.
+[Defaults]
+# Headers = ["Authorization: Basic <base64 of login:password>"]
+
+# ───────────────────────────────────────────── read-only profiles
+
+[Profiles.prom]
+Description  = "dev · Prometheus: service metrics, job = service name"
+BaseURL      = "https://prometheus.example.com"
+AllowMethods = ["GET"]
+AllowPaths   = [
+  "^/api/v1/(query|query_range|labels|series)$",
+  "^/api/v1/label/[^/]+/values$",
+  "^/api/v1/status/buildinfo$",
+]
+# Only the parameters listed here may be set by a call; anything else is
+# QueryParamNotAllowed. step is bounded from below by the scrape interval: a
+# smaller step duplicates points instead of adding them. The list is checked
+# against the cheat sheet in both directions, so the two cannot drift.
+AllowQueryParams = ["query", "time", "timeout", "start", "end", "step>=15s", "limit", "match[]", "lookback_delta"]
+# Two answer shapes: query and query_range put the series under .data.result,
+# while labels, label values, series and buildinfo put an array or an object
+# directly in .data. One filter per profile, so it tells them apart itself.
+DefaultJQ    = '.data | if type == "object" and has("result") then .result else . end'
+TimeParams   = ["start", "end", "time"]
+TimeFormat   = "unix"
+
+[Profiles.grafana]
+Description        = "dev · Grafana: dashboards, datasources, annotations; logs through POST /api/ds/query"
+BaseURL            = "https://grafana.example.com"
+SkipDefaultHeaders = true
+Headers            = ["Authorization: Bearer <grafana-service-account-token>"]
+AllowMethods       = ["GET", "POST"]
+# ReadOnlyPost: patterns without a prefix are GET only and the single POST is
+# named explicitly. An unanchored "^/api/(search|datasources|annotations)"
+# together with POST would let through annotation creation and the datasource
+# proxy — which is the Prometheus and Loki allowlist bypassed wholesale.
+AllowPaths         = [
+  "^/api/search$",
+  "^/api/health$",
+  "^/api/datasources$",
+  "^/api/datasources/uid/[\\w-]+$",
+  "^/api/datasources/uid/[\\w-]+/resources/(api/v1/)?(labels|series|metadata|label/[^/]+/values)$",
+  "^/api/dashboards/uid/[\\w-]+$",
+  "^/api/annotations$",
+  "POST ^/api/ds/query$",   # semantically a read: run a query against a datasource
+]
+ReadOnlyPost       = true
+
+[Profiles.sentry]
+Description        = "dev · Sentry: issues, events, releases; environment is pinned to the contour"
+BaseURL            = "https://sentry.example.com"
+SkipDefaultHeaders = true
+Headers            = ["Authorization: Bearer <sentry-read-token>"]
+AllowMethods       = ["GET"]
+AllowPaths         = [
+  "^/api/0/organizations/$",
+  "^/api/0/organizations/[\\w-]+/(issues|projects|releases)/",
+  "^/api/0/issues/\\d+(/events/latest)?/$",
+  "^/api/0/projects/[\\w-]+/[\\w-]+/(issues|events)/",
+]
+# One Sentry for several contours: the server sets the environment on every
+# request, replacing whatever the model passed for the same key.
+Query              = ["environment=devel"]
+# warn, not redact: count the hits first through app_mcp_redactions_total, then
+# pick the rule set. card and ip have both matched unix timestamps and versions.
+Redact             = "warn"
+RedactRules        = ["email", "phone", "card", "token", "jwt", "pem", "ip"]
+
+[Profiles.nomad]
+Description  = "dev · Nomad: jobs, allocations, nodes"
+BaseURL      = "https://nomad.example.com"
+SkipDefaultHeaders = true
+Headers      = ["X-Nomad-Token: <nomad-token>"]
+AllowMethods = ["GET"]
+AllowPaths   = [
+  "^/v1/(status/leader|jobs|allocations|nodes)$",
+  "^/v1/agent/health$",
+  "^/v1/job/[\\w-]+((/|%2[Ff])(dispatch|periodic)-[\\w-]+)?(/allocations|/deployments|/evaluations|/summary|/versions)?$",
+  "^/v1/allocation/[\\w-]+$",
+  "^/v1/node/[\\w-]+$",
+]
+# No index and no wait: with them the request becomes blocking and holds a slot
+# for up to five minutes while nothing in the cluster changes.
+AllowQueryParams = ["namespace", "region", "prefix", "filter", "meta", "all", "diffs", "resources", "task_states", "os", "type", "per_page", "next_token", "reverse", "stale"]
+
+[Profiles.gitlab]
+Description        = "dev · GitLab: projects, files, commits, merge requests, pipelines, jobs"
+BaseURL            = "https://git.example.com"
+SkipDefaultHeaders = true
+# read_api + read_repository. The same token clones the mirrors: the [Repos.*]
+# sections point at this profile through CloneTarget.
+Headers            = ["PRIVATE-TOKEN: <gitlab-personal-access-token>"]
+AllowMethods       = ["GET"]
+AllowPaths         = [
+  # The only path without a project id: "the host is alive and the token is
+  # accepted", answered before it turns out the id was the problem.
+  "^/api/v4/version$",
+  "^/api/v4/projects/\\d+$",
+  "^/api/v4/projects/\\d+/repository/files/[^/]+/raw$",
+  "^/api/v4/projects/\\d+/repository/(tree|compare|commits|branches|tags)$",
+  "^/api/v4/projects/\\d+/repository/branches/[^/]+$",
+  "^/api/v4/projects/\\d+/repository/commits/[0-9a-f]+(/diff)?$",
+  "^/api/v4/projects/\\d+/merge_requests$",
+  "^/api/v4/projects/\\d+/merge_requests/\\d+(/changes|/diffs|/notes|/commits|/pipelines)?$",
+  "^/api/v4/projects/\\d+/pipelines$",
+  "^/api/v4/projects/\\d+/pipelines/\\d+(/jobs)?$",
+  "^/api/v4/projects/\\d+/jobs/\\d+(/trace)?$",
+  "^/api/v4/projects/\\d+/search$",
+]
+# The query parameters are deliberately not listed: GitLab has hundreds of them
+# and a partial list reads as access denied. private_token, access_token,
+# job_token and sudo never pass on any profile — those are credentials in a
+# query string.
+
+[Profiles.youtrack]
+Description        = "dev · YouTrack: issues, knowledge base, projects"
+BaseURL            = "https://bugs.example.com"
+SkipDefaultHeaders = true
+Headers            = ["Authorization: Bearer <youtrack-read-token>"]
+AllowMethods       = ["GET"]
+AllowPaths         = [
+  "^/api/issues(/[A-Z]+-\\d+)?$",
+  "^/api/articles(/([A-Z]+-A-\\d+|\\d+-\\d+))?$",
+  "^/api/admin/projects$",
+]
+# YouTrack does not cap $top itself: a thousand issues with fields is built on
+# the server in full and then runs into truncation here.
+AllowQueryParams   = ["fields", "query", "$top<=200", "$skip", "customFields"]
+
+# ───────────────────────────────────────────── a write profile
+
+# A write profile is a section of its own, and a role without AllowWrite does
+# not see it at all. Writing always goes as a separate call and always carries
+# an intent.
+[Profiles.youtrack-rw]
+Description        = "dev · YouTrack: create an issue or a comment"
+BaseURL            = "https://bugs.example.com"
+SkipDefaultHeaders = true
+Headers            = ["Authorization: Bearer <youtrack-write-token>"]
+AllowMethods       = ["GET", "POST"]
+AllowPaths         = [
+  "^/api/issues$",
+  "^/api/issues/[A-Z]+-\\d+/comments$",
+]
+Write              = true
+
+# ───────────────────────────────────────────── databases
+
+# Read-only, and not by a flag: the user is read-only on the database side, and
+# the server proves it with probes at startup. A reachable database that
+# accepts a write refuses the start; an unreachable one leaves the target
+# unproven, and queries do not go to it until a probe a minute later succeeds.
+[Databases.orders-pg]
+Description   = "dev · PostgreSQL, a replica of orders-api: orders, payments; the status enums live in code, see code in db_introspect"
+Driver        = "postgres"
+Addr          = "db-replica.example.com:5432"
+Database      = "orders"
+User          = "ringsrv_ro"
+Password      = "<orders-ro-password>"
+Schemas       = ["public", "billing"]
+Repo          = "orders-api"
+Redact        = "redact"
+RedactRules   = ["email", "phone"]
+MaxRows       = 200
+Timeout       = "15s"
+MaxConcurrent = 2
+
+# The schemas of one database belong to different services, and public to two
+# of them at once: db_introspect hands out the code pointer per schema.
+[Databases.orders-pg.SchemaRepos]
+public  = ["orders-api", "billing-api"]
+billing = ["billing-api"]
+
+[Databases.events-ch]
+Description = "dev · ClickHouse: events, anonymised; use now() - INTERVAL 2 HOUR, and FINAL on a ReplacingMergeTree"
+Driver      = "clickhouse"
+Addr        = "clickhouse.example.com:9000"
+Database    = "events"
+User        = "ringsrv"
+Password    = "<clickhouse-ro-password>"
+Redact      = "off"
+# Two services write this database; ClickHouse has no schemas, so there is
+# nothing for SchemaRepos to split.
+Repo        = ["orders-api", "billing-api"]
+
+# ───────────────────────────────────────────── roles
+
+# A role ties IdP groups to a set of tools, targets, databases and repositories,
+# so that "what group X can see" is read in one place and shows up in a diff.
+
+[Roles.viewer]
+Description = "Metrics and logs"
+Groups      = ["ringsrv-users"]
+Tools       = ["api_call", "repo_map"]
+Targets     = ["grafana", "prom", "sentry"]
+
+[Roles.developer]
+Description = "Everything read-only, plus code, history and data"
+Groups      = ["ringsrv-developers"]
+Tools       = ["api_call", "repo_map", "code_read", "code_search", "code_history", "code_refs", "blast_radius", "why", "db_query", "db_introspect"]
+Targets     = ["grafana", "prom", "sentry", "nomad", "gitlab", "youtrack", "orders-pg", "events-ch"]
+Repos       = ["*"]
+
+[Roles.oncall]
+Description = "On call: everything read-only plus writing to the tracker"
+Groups      = ["ringsrv-oncall"]
+Tools       = ["*"]
+Targets     = ["*", "orders-pg", "events-ch"]   # "*" covers profiles only; databases are named
+Repos       = ["*"]
+AllowWrite  = true
+MaxWrites   = 10                                # write calls per session
+
+# ───────────────────────────────────────────── repositories
+
+[Repos.orders-api]
+GitLabProject = 42
+Description   = """
+Orders API. Layers: db → domain → rpc.
+Gotchas: the payment queue does not survive a restart without draining; the
+database is shared with billing.
+"""
+CloneURL      = "https://git.example.com/example/orders-api.git"
+CloneTarget   = "gitlab"                        # the clone token comes from the gitlab profile
+DefaultBranch = "master"
+Refspec       = ["+refs/heads/*:refs/remotes/origin/*"]
+Tags          = false
+SentrySlug    = "orders-api"
+NomadJob      = "orders-api"
+PromJob       = "orders-api"
+IssueTarget   = "youtrack"                      # the tracker profile `why` enriches from
+Exclude       = ["vendor/", "node_modules/", "*.pem", ".env*", "id_rsa*"]
+TaskIDRegexp  = "^([A-Z]+-\\d+)"
+
+[Repos.orders-api.Layers]
+db     = "pkg/db"
+domain = "pkg/orders"
+rpc    = "pkg/rpc"
+
+[Repos.billing-api]
+GitLabProject = 43
+Description   = """
+Billing API. Layers: db → domain → rpc. Owns the billing schema of orders-pg.
+"""
+CloneURL      = "https://git.example.com/example/billing-api.git"
+CloneTarget   = "gitlab"
+DefaultBranch = "master"
+SentrySlug    = "billing-api"
+NomadJob      = "billing-api"
+PromJob       = "billing-api"
+IssueTarget   = "youtrack"
+Exclude       = ["vendor/", "node_modules/", "*.pem", ".env*", "id_rsa*"]
+TaskIDRegexp  = "^([A-Z]+-\\d+)"
+
+[Repos.billing-api.Layers]
+db     = "pkg/db"
+domain = "pkg/billing"
+rpc    = "pkg/rpc"

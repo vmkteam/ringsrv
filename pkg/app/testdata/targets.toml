@@ -1,0 +1,116 @@
+# A self-contained catalogue for the pkg/app tests. What they exercise is the
+# HTTP and MCP plumbing, and for that any valid catalogue will do — so this one
+# lives next to them instead of pointing at the contour file a laptop happens to
+# have. That file also stays in the internal repository, and these tests are the
+# ones a public checkout should still be able to run.
+#
+# The profile names match the cheat sheets in pkg/ring/md/md/targets: the
+# surface pairs a target with its help page by name.
+
+Env = "dev"
+
+[Profiles.prom]
+Description      = "dev · Prometheus: service metrics, job = service name"
+BaseURL          = "https://prometheus.example.com"
+AllowMethods     = ["GET"]
+AllowPaths       = [
+  "^/api/v1/query$",
+  "^/api/v1/query_range$",
+]
+DefaultJQ        = ".data.result"
+TimeParams       = ["start", "end", "time"]
+TimeFormat       = "unix"
+AllowQueryParams = ["query", "start", "end", "time", "step>=15s"]
+
+[Profiles.grafana]
+Description        = "dev · Grafana: dashboards, annotations, logs through a datasource"
+BaseURL            = "https://grafana.example.com"
+SkipDefaultHeaders = true
+Headers            = ["Authorization: Bearer grafana-token"]
+AllowMethods       = ["GET", "POST"]
+ReadOnlyPost       = true
+AllowPaths         = [
+  "^/api/search$",
+  "^/api/annotations$",
+  "POST ^/api/ds/query$",
+]
+
+[Profiles.sentry]
+Description        = "dev · Sentry: issues, events and releases of a service"
+BaseURL            = "https://sentry.example.com"
+SkipDefaultHeaders = true
+Headers            = ["Authorization: Bearer sentry-token"]
+AllowMethods       = ["GET"]
+AllowPaths         = ["^/api/0/organizations/example/issues/$"]
+Query              = ["environment=devel"]
+Redact             = "warn"
+
+[Profiles.youtrack]
+Description        = "dev · YouTrack: read issues and comments"
+BaseURL            = "https://bugs.example.com"
+SkipDefaultHeaders = true
+Headers            = ["Authorization: Bearer youtrack-token"]
+AllowMethods       = ["GET"]
+AllowPaths         = ["^/api/issues/[A-Z]+-\\d+$"]
+
+[Profiles.youtrack-rw]
+Description        = "dev · YouTrack: create an issue or a comment"
+BaseURL            = "https://bugs.example.com"
+SkipDefaultHeaders = true
+Headers            = ["Authorization: Bearer youtrack-rw-token"]
+AllowMethods       = ["GET", "POST"]
+AllowPaths         = ["^/api/issues$", "^/api/issues/[A-Z]+-\\d+/comments$"]
+Write              = true
+
+[Databases.orders-pg]
+Description = "dev · PostgreSQL, a replica of orders-api: orders and payments"
+Driver      = "postgres"
+Addr        = "db.example.com:5432"
+Database    = "orders"
+User        = "ringsrv_ro"
+Password    = "ro-password"
+Schemas     = ["public"]
+Repo        = "orders-api"
+Redact      = "redact"
+
+[Roles.viewer]
+Description = "Metrics and logs"
+Groups      = ["mcp-users"]
+Tools       = ["api_call", "repo_map"]
+Targets     = ["grafana", "prom", "sentry"]
+
+[Roles.developer]
+Description = "Everything read-only, plus code and data"
+Groups      = ["mcp-developers"]
+Tools       = ["*"]
+Targets     = ["grafana", "prom", "sentry", "youtrack", "orders-pg"]
+Repos       = ["*"]
+
+[Roles.oncall]
+Description = "On call: read everything, write to the tracker"
+Groups      = ["mcp-oncall"]
+Tools       = ["*"]
+Targets     = ["*", "orders-pg"]
+Repos       = ["*"]
+AllowWrite  = true
+MaxWrites   = 10
+
+[Repos.orders-api]
+Description   = """
+Orders API. Layers: db → domain → rpc.
+"""
+CloneURL      = "https://git.example.com/example/orders-api.git"
+CloneToken    = "clone-token"
+DefaultBranch = "master"
+SentrySlug    = "orders-api"
+NomadJob      = "orders-api"
+PromJob       = "orders-api"
+IssueTarget   = "youtrack"
+IssuePath     = "/api/issues/{id}"
+Exclude       = ["vendor/", "node_modules/"]
+TaskIDRegexp  = "^([A-Z]+-\\d+)"
+
+[Repos.orders-api.Layers]
+db     = "pkg/db"
+domain = "pkg/orders"
+rpc    = "pkg/rpc"

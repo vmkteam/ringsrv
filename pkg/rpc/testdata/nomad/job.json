@@ -1,0 +1,42 @@
+{
+  "ID": "apisrv",
+  "Name": "apisrv",
+  "Type": "service",
+  "Status": "running",
+  "Stable": true,
+  "Version": 955,
+  "SubmitTime": 1788192481284870447,
+  "Meta": {
+    "docker_image_version": "dev-88cfbb5d"
+  },
+  "TaskGroups": [
+    {
+      "Name": "apisrv",
+      "Count": 1,
+      "Tasks": [
+        {
+          "Name": "apisrv",
+          "Driver": "docker",
+          "Config": {
+            "image": "registry.example.com/acme/apisrv:dev-88cfbb5d"
+          },
+          "Resources": {
+            "CPU": 300,
+            "MemoryMB": 512
+          }
+        },
+        {
+          "Name": "pgmigrator",
+          "Driver": "docker",
+          "Config": {
+            "image": "registry.example.com/acme/apisrv/migrations:dev-88cfbb5d"
+          },
+          "Resources": {
+            "CPU": 100,
+            "MemoryMB": 128
+          }
+        }
+      ]
+    }
+  ]
+}

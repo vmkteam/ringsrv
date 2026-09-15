@@ -1,0 +1,25 @@
+{
+  "Versions": [
+    {
+      "ID": "apisrv",
+      "Version": 955,
+      "Stable": true,
+      "Status": "running",
+      "SubmitTime": 1788192481284870447,
+      "Meta": {
+        "docker_image_version": "dev-88cfbb5d"
+      }
+    },
+    {
+      "ID": "apisrv",
+      "Version": 954,
+      "Stable": true,
+      "Status": "running",
+      "SubmitTime": 1788180393173859135,
+      "Meta": {
+        "docker_image_version": "dev-65d5781a"
+      }
+    }
+  ],
+  "Diffs": null
+}

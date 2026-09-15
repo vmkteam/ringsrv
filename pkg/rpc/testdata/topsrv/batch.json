@@ -1,0 +1,1 @@
+[{"jsonrpc":"2.0","id":1,"result":{"project":"acme","scopes":["hosts:read","metrics:read"],"tokenPrefix":"tsk_acme_0000","expiresAt":"2027-09-07T14:05:57Z"}},{"jsonrpc":"2.0","id":2,"error":{"code":403,"message":"insufficient_scope"}}]
