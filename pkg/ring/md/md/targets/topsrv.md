@@ -1,6 +1,6 @@
 ---
 name: topsrv
-description: topsrv через api_call — JSON-RPC за одним путём, методы по хостам, метрикам, алертам, инвентарю и логам nginx; метка instance, время в params, ошибки при HTTP 200.
+description: topsrv через api_call — JSON-RPC за одним путём, методы по хостам и их IP, метрикам, алертам, инвентарю и логам nginx; метка instance, время в params, ошибки при HTTP 200.
 ---
 
 # Таргет `topsrv` — хосты, их метрики и алерты
@@ -27,8 +27,8 @@ nginx/angie, S.M.A.R.T., сертификаты, пакеты и уязвимо�
 | Метод | Параметры | Зачем |
 |---|---|---|
 | `meta.whoami` | — | проект, скоупы и срок токена — проверка, что таргет отвечает |
-| `host.list` | — | все хосты: hostname, ОС, ядро, версия агента, `lastSeen` |
-| `host.get` | `hostname` | один хост или `host_not_found` |
+| `host.list` | — | все хосты: hostname, ОС, ядро, версия агента, `lastSeen`, адреса интерфейсов `addresses` |
+| `host.get` | `hostname` | один хост с теми же полями или `host_not_found` |
 | `host.summary` | — | строка на хост: cpu, memUsed/memTotal, diskMax (%), load, uptime — первый взгляд |
 | `metric.query` | `query` | мгновенный PromQL |
 | `metric.queryRange` | `query`, `start`, `end`, `step` | ряд за период |
@@ -67,6 +67,35 @@ api_call(calls: [{target: "topsrv", method: "POST", path: "/api/v1/rpc/",
 {"jsonrpc":"2.0","id":1,"method":"weblog.search","params":{"filter":{"requestId":["<из лога сервиса>"]}}}
 [{"jsonrpc":"2.0","id":1,"method":"host.summary"},{"jsonrpc":"2.0","id":2,"method":"alert.list","params":{"state":"firing"}}]
 ```
+
+## Адреса хостов
+
+У каждого хоста из `host.list` и `host.get` есть `addresses`: `address`, `interface`,
+`visibility` (`private` — RFC1918, CGNAT; иначе `public`) и `network` — адрес с маской
+интерфейса. Это ответ на «чья это машина — `10.0.0.6`» из DSN, конфига или лога:
+адрес ищется здесь, а не выводится из меток метрик. Найденный `hostname` — это и
+`instance` в PromQL.
+
+```
+api_call(calls: [{target: "topsrv", method: "POST", path: "/api/v1/rpc/",
+                  body: "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"host.list\"}",
+                  jq: ".error // [.result[] | select(any(.addresses[]; .address == \"10.0.0.6\")) | .hostname]"}])
+```
+
+Свой `jq` заменяет `DefaultJQ`, поэтому конверт снимается в нём же, а `.error //`
+не даёт отказу выглядеть пустым списком.
+
+- Отдаются IPv4, по одному на интерфейс, за те же 48 часов, что и сам список хостов.
+  Loopback, link-local и мосты Docker (`docker0`, `docker_gwbridge`, `br-…`) отброшены:
+  они одинаковы на многих машинах и ничего не различают.
+- **Пустой `addresses` не доказывает, что адреса нет:** адреса приходят отдельным
+  запросом, и его отказ вызов не валит — хост приезжает с `[]`.
+- **`network` — маска интерфейса, а не подсеть площадки.** В облаках приватный адрес
+  нередко висит как `/32` (`10.0.1.20/32`), и отбор по `network == "10.0.1.0/24"` там
+  ничего не найдёт; надёжнее по `address` — `startswith("10.0.1.")`.
+- На 2026-09-29 мост Nomad (`interface: "nomad"`, по умолчанию `172.26.64.1`) ещё
+  приезжает. Он одинаков на всех хостах с `bridge`-сетью у заданий — машину по нему
+  не определить.
 
 ## Метрики
 
