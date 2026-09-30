@@ -16,7 +16,7 @@ import (
 )
 
 // gitT runs git in dir for test fixtures, with an author so commits work on a
-// machine with no global config. Same shape as vmksrv's helper.
+// machine with no global config.
 func gitT(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	full := append([]string{"-C", dir, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"}, args...)
@@ -38,12 +38,12 @@ func originRepo(t *testing.T) (path, first, second string) {
 	}
 	write("main.go", "package main\n\nfunc main() {}\n")
 	gitT(t, path, "add", ".")
-	gitT(t, path, "commit", "-m", "PLF-1 initial")
+	gitT(t, path, "commit", "-m", "ABC-1 initial")
 	first = gitT(t, path, "rev-parse", "HEAD")
 
 	write("main.go", "package main\n\nfunc main() { println(\"hi\") }\n")
 	gitT(t, path, "add", ".")
-	gitT(t, path, "commit", "-m", "PLF-2 print")
+	gitT(t, path, "commit", "-m", "ABC-2 print")
 	second = gitT(t, path, "rev-parse", "HEAD")
 	return path, first, second
 }
@@ -81,7 +81,7 @@ func TestEnsureAndFetch(t *testing.T) {
 
 	// A commit made after the clone is invisible until a fetch, and visible
 	// right after — that is the whole contract of the mirror.
-	gitT(t, origin, "commit", "--allow-empty", "-m", "PLF-3 later")
+	gitT(t, origin, "commit", "--allow-empty", "-m", "ABC-3 later")
 	third := gitT(t, origin, "rev-parse", "HEAD")
 
 	_, err := s.ResolveSHA(t.Context(), "apisrv", third[:10])
@@ -338,7 +338,7 @@ func (r Repo) byID(id int) int {
 var used = Create
 `), 0o600))
 	gitT(t, origin, "add", ".")
-	gitT(t, origin, "commit", "-m", "PLF-1 initial")
+	gitT(t, origin, "commit", "-m", "ABC-1 initial")
 	sha := gitT(t, origin, "rev-parse", "HEAD")
 
 	s := newStore(t)
@@ -422,7 +422,7 @@ func TestBranchesFollowTheRemote(t *testing.T) {
 	require.NoError(t, s.Ensure(t.Context(), spec))
 
 	// Move master and create a branch after the clone.
-	gitT(t, origin, "commit", "--allow-empty", "-m", "PLF-3 later")
+	gitT(t, origin, "commit", "--allow-empty", "-m", "ABC-3 later")
 	third := gitT(t, origin, "rev-parse", "HEAD")
 	gitT(t, origin, "branch", "hotfix", third)
 	require.NoError(t, s.Fetch(t.Context(), spec))

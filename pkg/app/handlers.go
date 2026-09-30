@@ -125,6 +125,7 @@ func (a *App) registerMCPHandlers() {
 		Sessions:      a.sessions,
 		Logger:        a.Logger,
 		IsDevel:       a.cfg.Server.IsDevel,
+		Budget:        a.cfg.RateLimit.CostBudgetPerHour > 0,
 	})
 	// LogHandshake is the only place that answers what a client actually speaks:
 	// neither Claude Code nor Claude Desktop documents its revision, and no

@@ -18,8 +18,8 @@ import (
 	"github.com/vmkteam/embedlog"
 )
 
-// blastFixture rebuilds the shape of the incident the tool was measured on
-// (PLF-1218): a release touches several files, one of them the
+// blastFixture rebuilds the shape of the incident the tool was measured on:
+// a release touches several files, one of them the
 // function a stack trace points into, and the frames have to pick that one out.
 func blastFixture(t *testing.T) (svc ToolsService, prev, release string) {
 	t.Helper()
@@ -40,7 +40,7 @@ func (r Repo) OrderByID(id int) int {
 `)
 	write("internal/rpc/product.go", `package rpc
 
-func ProducerImageIDs(ids []int) int {
+func PriceTotal(ids []int) int {
 	total := 0
 	for _, id := range ids {
 		total += id
@@ -66,14 +66,14 @@ func CacheKey(a int) string {
 }
 `)
 	gittest.Git(t, origin, "add", ".")
-	gittest.Git(t, origin, "commit", "-m", "PLF-1 initial")
+	gittest.Git(t, origin, "commit", "-m", "ABC-1 initial")
 	prev = gittest.Git(t, origin, "rev-parse", "HEAD")
 
-	// The release: the guilty change lands in ProducerImageIDs, an innocent
+	// The release: the guilty change lands in PriceTotal, an innocent
 	// one in another file. Only the frames can tell them apart.
 	write("internal/rpc/product.go", `package rpc
 
-func ProducerImageIDs(ids []int) int {
+func PriceTotal(ids []int) int {
 	total := 0
 	for _, id := range ids {
 		total += id * 2
@@ -110,7 +110,7 @@ func CacheKey(a int) string {
 }
 `)
 	gittest.Git(t, origin, "add", ".")
-	gittest.Git(t, origin, "commit", "-m", "PLF-2 double the ids")
+	gittest.Git(t, origin, "commit", "-m", "ABC-2 double the ids")
 	release = gittest.Git(t, origin, "rev-parse", "HEAD")
 
 	root := t.TempDir()
@@ -183,13 +183,13 @@ func TestBlastRadius(t *testing.T) { //nolint:tparallel // subtests share the fi
 
 		require.Len(t, out.Intersection, 1, "one frame, one symbol")
 		hit := out.Intersection[0]
-		assert.Equal(t, "ProducerImageIDs", hit.Symbol)
+		assert.Equal(t, "PriceTotal", hit.Symbol)
 		assert.Equal(t, "internal/rpc/product.go", hit.Path)
 		assert.Equal(t, code.ChangeBody, hit.Change, "one line inside an existing function is a body change")
 		assert.Equal(t, "rpc", hit.Layer)
 		assert.Equal(t, "internal/rpc/product.go:6", hit.Frame, "the answer says which frame matched")
 		require.NotNil(t, hit.Task)
-		assert.Equal(t, "PLF-2", *hit.Task, "the task comes from the commit that touched the file")
+		assert.Equal(t, "ABC-2", *hit.Task, "the task comes from the commit that touched the file")
 
 		// The other changed symbol is real but not in the trace, so it stays
 		// out of the answer and lives in the context list.
@@ -251,7 +251,7 @@ func TestBlastRadius(t *testing.T) { //nolint:tparallel // subtests share the fi
 		assert.Equal(t, code.KindFile, hit.Kind, "and the kind says so instead of leaving a nameless row")
 		assert.Equal(t, "internal/rpc/cache.go", hit.Path)
 		require.NotNil(t, hit.Task)
-		assert.Equal(t, "PLF-2", *hit.Task)
+		assert.Equal(t, "ABC-2", *hit.Task)
 		assert.Zero(t, out.Counts.UnmatchedFrames)
 	})
 
@@ -274,7 +274,7 @@ func TestBlastRadius(t *testing.T) { //nolint:tparallel // subtests share the fi
 			"frames": []string{"/builds/acme/apisrv/internal/rpc/product.go:6"},
 		})
 		require.Len(t, out.Intersection, 1)
-		assert.Equal(t, "ProducerImageIDs", out.Intersection[0].Symbol)
+		assert.Equal(t, "PriceTotal", out.Intersection[0].Symbol)
 		assert.Zero(t, out.Counts.UnmatchedFrames)
 	})
 
@@ -379,7 +379,7 @@ func Stable(x int) int {
 }
 `)
 	gittest.Git(t, origin, "add", ".")
-	gittest.Git(t, origin, "commit", "-m", "PLF-1 initial")
+	gittest.Git(t, origin, "commit", "-m", "ABC-1 initial")
 	prev = gittest.Git(t, origin, "rev-parse", "HEAD")
 
 	// Second commit: one task touches First only.
@@ -394,7 +394,7 @@ func Second(x int) int {
 }
 `)
 	gittest.Git(t, origin, "add", ".")
-	gittest.Git(t, origin, "commit", "-m", "PLF-2 double first")
+	gittest.Git(t, origin, "commit", "-m", "ABC-2 double first")
 
 	// Third commit, another task: Second changes, Gone is deleted, B.String
 	// changes, old.go only moves, and weak.go changes a constant far from
@@ -433,7 +433,7 @@ func Stable(x int) int {
 `)
 	gittest.Git(t, origin, "mv", "internal/rpc/old.go", "internal/rpc/moved.go")
 	gittest.Git(t, origin, "add", ".")
-	gittest.Git(t, origin, "commit", "-m", "PLF-3 triple second, drop Gone")
+	gittest.Git(t, origin, "commit", "-m", "ABC-3 triple second, drop Gone")
 	release = gittest.Git(t, origin, "rev-parse", "HEAD")
 
 	root := t.TempDir()
@@ -563,9 +563,9 @@ func TestBlastRadius_Shapes(t *testing.T) { //nolint:tparallel // subtests share
 			byName[r.Symbol] = r
 		}
 		require.NotNil(t, byName["First"].Task)
-		assert.Equal(t, "PLF-2", *byName["First"].Task)
+		assert.Equal(t, "ABC-2", *byName["First"].Task)
 		require.NotNil(t, byName["Second"].Task)
-		assert.Equal(t, "PLF-3", *byName["Second"].Task)
+		assert.Equal(t, "ABC-3", *byName["Second"].Task)
 	})
 
 	// The release changed a constant the frame's function reads, but not the

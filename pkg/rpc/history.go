@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/vmkteam/ringsrv/pkg/ring/code"
 
 	"github.com/vmkteam/mcpkit/mcp"
+	"github.com/vmkteam/mcpkit/ratelimit"
 )
 
 // ToolCodeHistory answers about the history of a line rather than of a file:
@@ -65,6 +67,8 @@ type CodeHistoryResult struct {
 	// Note says what the answer could not cover, e.g. that this mirror carries
 	// no tags — otherwise an empty list reads as "released nowhere".
 	Note string `json:"note,omitempty"`
+	// Budget is the hourly work budget with this history paid for.
+	Budget *Budget `json:"budget,omitempty"`
 }
 
 var codeHistoryInputSchema = mcp.SchemaFor(CodeHistoryArgs{})
@@ -86,6 +90,7 @@ func (s ToolsService) history(ctx context.Context, arguments map[string]any, rec
 		return refuse(rec, *toolErr)
 	}
 
+	started := time.Now()
 	res, err := s.code.History(ctx, repo, code.HistoryQuery{
 		Mode:      args.Mode,
 		Ref:       args.Ref,
@@ -100,6 +105,9 @@ func (s ToolsService) history(ctx context.Context, arguments map[string]any, rec
 		WithFiles: args.WithFiles,
 		Max:       args.MaxCommits,
 	})
+	// Billed failed or not: a missing commit can cost a fetch. The label is the
+	// repository codeAccess found in the catalogue.
+	ratelimit.ChargeFor(ctx, args.Repo, time.Since(started))
 	if err != nil {
 		return refuse(rec, s.codeError(err, args.Repo, args.Path))
 	}
@@ -108,6 +116,7 @@ func (s ToolsService) history(ctx context.Context, arguments map[string]any, rec
 		Repo: args.Repo, Mode: res.Mode, Ref: res.Ref,
 		Commits:  mcp.Map(res.Commits, newHistoryCommit),
 		Branches: res.Branches, Tags: res.Tags,
+		Budget: budgetOf(ctx),
 	}
 	if res.NoTags {
 		// D10: tags are not mirrored, and an empty list here would otherwise be

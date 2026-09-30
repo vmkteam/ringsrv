@@ -98,7 +98,14 @@ func TestCatalogue_TopsrvDefaultJQ(t *testing.T) {
 			t.Run("hosts pass through without the envelope", func(t *testing.T) {
 				hosts := apply(t, "hosts.json").([]any)
 				require.Len(t, hosts, 2)
-				assert.Equal(t, "db1", hosts[0].(map[string]any)["hostname"])
+				db := hosts[0].(map[string]any)
+				assert.Equal(t, "db1", db["hostname"])
+				// addresses (topsrv since 2026-09-29) is how the model finds whose
+				// machine an IP from a DSN is, so the filter must keep it whole.
+				addrs := db["addresses"].([]any)
+				require.Len(t, addrs, 2)
+				assert.Equal(t, map[string]any{"address": "10.0.0.6", "interface": "bond0", "visibility": "private", "network": "10.0.0.0/24"}, addrs[0])
+				assert.Equal(t, []any{}, hosts[1].(map[string]any)["addresses"], "a failed address lookup stays an empty list")
 			})
 
 			// The weblog answers (weblogs:read, 2026-09-09) are already flat:

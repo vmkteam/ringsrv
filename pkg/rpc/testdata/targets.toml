@@ -168,8 +168,8 @@ Timeout       = "15s"
 MaxConcurrent = 2
 
 [Databases.app-pg.SchemaRepos]
-public  = ["apisrv", "tpsrv"]
-billing = ["tpsrv"]
+public  = ["apisrv", "paysrv"]
+billing = ["paysrv"]
 
 [Databases.events-ch]
 Description = "prod · ClickHouse: события, обезличено; now() - INTERVAL 2 HOUR, у ReplacingMergeTree — FINAL"
@@ -179,7 +179,7 @@ Database    = "events"
 User        = "ringsrv"
 Password    = "ro-password"
 Redact      = "off"
-Repo        = ["apisrv", "tpsrv"]
+Repo        = ["apisrv", "paysrv"]
 
 [Roles.viewer]
 Description = "Чтение метрик и логов"
@@ -205,7 +205,7 @@ Repos       = ["*"]
 GitLabProject = 42
 Description   = """
 API заказов. Слои: db → domain → rpc.
-Грабли: очередь платежей не терпит рестарта без дренажа; общая база с tpsrv.
+Грабли: очередь платежей не терпит рестарта без дренажа; общая база с paysrv.
 """
 CloneURL      = "https://git.example.com/example/apisrv.git"
 CloneTarget   = "gitlab"
@@ -224,23 +224,23 @@ db     = "pkg/db"
 domain = "pkg/orders"
 rpc    = "pkg/rpc"
 
-[Repos.tpsrv]
+[Repos.paysrv]
 GitLabProject = 43
 Description   = """
 Биллинг. Слои: db → domain → rpc. Владеет схемой billing в app-pg.
 """
-CloneURL      = "https://git.example.com/example/tpsrv.git"
+CloneURL      = "https://git.example.com/example/paysrv.git"
 CloneTarget   = "gitlab"
 DefaultBranch = "master"
 Tags          = false
-SentrySlug    = "tpsrv"
-NomadJob      = "tpsrv"
-PromJob       = "tpsrv"
+SentrySlug    = "paysrv"
+NomadJob      = "paysrv"
+PromJob       = "paysrv"
 IssueTarget   = "youtrack"
 Exclude       = ["vendor/", "node_modules/", "*.pem", ".env*", "id_rsa*"]
 TaskIDRegexp  = "^([A-Z]+-\\d+)"
 
-[Repos.tpsrv.Layers]
+[Repos.paysrv.Layers]
 db     = "pkg/db"
 domain = "pkg/billing"
 rpc    = "pkg/rpc"

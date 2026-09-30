@@ -16,6 +16,7 @@ import (
 	"github.com/vmkteam/ringsrv/pkg/ring/dbq"
 	"github.com/vmkteam/ringsrv/pkg/ring/md"
 	"github.com/vmkteam/ringsrv/pkg/ring/target"
+	"github.com/vmkteam/ringsrv/pkg/rpc"
 
 	"github.com/labstack/echo/v4"
 	"github.com/vmkteam/appkit"
@@ -312,7 +313,11 @@ func (a *App) initGraph(ctx context.Context) error {
 // initRateLimit builds the MCP limiter and logs what it will actually enforce
 // — each limit is disabled independently when its config value is ≤0.
 func (a *App) initRateLimit(ctx context.Context) {
-	a.rateLimit = ratelimit.New(a.cfg.RateLimit)
+	// Which calls the budget spares is a fact about the tools, not about a
+	// contour, so it is set here rather than read from the config.
+	cfg := a.cfg.RateLimit
+	cfg.Exempt = rpc.ExemptFromBudget
+	a.rateLimit = ratelimit.New(cfg)
 	if a.rateLimit.Disabled() {
 		a.Print(ctx, "MCP rate limit: disabled")
 		return

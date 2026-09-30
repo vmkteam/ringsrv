@@ -31,7 +31,7 @@ func TestParseIssue(t *testing.T) {
 			"summary": "Создание заказа",
 			"description": "идемпотентно",
 			"comments": [{"text": "research: docs/llm/research/03-orders.md"}]
-		}`), "PLF-42")
+		}`), "ABC-42")
 		require.NotNil(t, issue)
 		assert.Equal(t, "Создание заказа", issue.Summary)
 		assert.Equal(t, "идемпотентно", issue.Description)
@@ -41,13 +41,13 @@ func TestParseIssue(t *testing.T) {
 	t.Run("jira", func(t *testing.T) {
 		t.Parallel()
 		issue := Parse([]byte(`{
-			"key": "PLF-42",
+			"key": "ABC-42",
 			"fields": {
 				"summary": "Order creation",
 				"description": "idempotent",
 				"comment": {"comments": [{"body": "spec: docs/llm/spec/02-orders.md"}]}
 			}
-		}`), "PLF-42")
+		}`), "ABC-42")
 		require.NotNil(t, issue)
 		assert.Equal(t, "Order creation", issue.Summary)
 		assert.Equal(t, []string{"docs/llm/spec/02-orders.md"}, issue.Artifacts)
@@ -57,14 +57,14 @@ func TestParseIssue(t *testing.T) {
 	// resolved, the tracker replied, there is simply no summary.
 	t.Run("empty issue", func(t *testing.T) {
 		t.Parallel()
-		issue := Parse([]byte(`{"$type":"Issue"}`), "PLF-42")
+		issue := Parse([]byte(`{"$type":"Issue"}`), "ABC-42")
 		require.NotNil(t, issue)
-		assert.Equal(t, "PLF-42", issue.ID)
+		assert.Equal(t, "ABC-42", issue.ID)
 		assert.Empty(t, issue.Summary)
 	})
 
 	t.Run("not json at all", func(t *testing.T) {
 		t.Parallel()
-		assert.Nil(t, Parse([]byte(`<html>gateway timeout</html>`), "PLF-42"))
+		assert.Nil(t, Parse([]byte(`<html>gateway timeout</html>`), "ABC-42"))
 	})
 }

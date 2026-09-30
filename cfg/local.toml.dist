@@ -59,6 +59,8 @@ DBMaxRows       = 200      # rows in a db_query answer when the target sets no M
 
 # Rate limit — a token bucket on Principal.UserID, reset by a restart.
 # Every limit ≤0 is disabled independently. Rarely needed locally.
+# CostBudgetPerHour spares help, repo_map, resources, prompts and the handshake
+# (rpc.ExemptFromBudget, in code); RPM and the concurrency limits do not.
 # [RateLimit]
 # PerUserRPM        = 60
 # PerUserConcurrent = 3

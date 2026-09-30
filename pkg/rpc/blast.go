@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/vmkteam/ringsrv/pkg/ring/code"
 
 	"github.com/vmkteam/mcpkit/mcp"
+	"github.com/vmkteam/mcpkit/ratelimit"
 )
 
 // ToolBlastRadius is the main hypothesis of the project: the symbols a release
@@ -75,6 +77,8 @@ type BlastRadiusResult struct {
 	Intersection []ChangedSymbol `json:"intersection"`
 	Changed      []ChangedSymbol `json:"changed,omitempty"`
 	Note         string          `json:"note,omitempty"`
+	// Budget is the hourly work budget with this range paid for.
+	Budget *Budget `json:"budget,omitempty"`
 }
 
 // Counts is the shape of the range before anything is read.
@@ -113,10 +117,12 @@ func (s ToolsService) blastRadius(ctx context.Context, arguments map[string]any,
 		return refuse(rec, *toolErr)
 	}
 
+	started := time.Now()
 	res, err := s.code.Blast(ctx, repo, code.BlastQuery{
 		Release: args.Release, Prev: args.Prev,
 		Frames: args.Frames, MaxSymbols: args.MaxSymbols,
 	})
+	ratelimit.ChargeFor(ctx, args.Repo, time.Since(started))
 	if err != nil {
 		return refuse(rec, s.codeError(err, args.Repo, ""))
 	}
@@ -124,7 +130,9 @@ func (s ToolsService) blastRadius(ctx context.Context, arguments map[string]any,
 	// Counts.Intersection is taken before the max_symbols cut.
 	rec.Truncated = len(res.Intersection) < res.Counts.Intersection
 
-	return okResultJSON(newBlastResult(args.Repo, res), s.env)
+	out := newBlastResult(args.Repo, res)
+	out.Budget = budgetOf(ctx)
+	return okResultJSON(out, s.env)
 }
 
 // newBlastResult wraps the answer and says in words what the numbers mean. The

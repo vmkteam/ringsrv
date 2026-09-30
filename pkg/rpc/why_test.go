@@ -34,7 +34,7 @@ func whyFixture(t *testing.T, tracker *httptest.Server, issueTarget, redact stri
 
 	write("internal/rpc/order.go", "package rpc\n\nfunc Create() error {\n\treturn nil\n}\n")
 	gittest.Git(t, origin, "add", ".")
-	gittest.Git(t, origin, "commit", "-m", "PLF-42 add order creation")
+	gittest.Git(t, origin, "commit", "-m", "ABC-42 add order creation")
 
 	// A formatting pass rewrites the same lines: blame will now name this
 	// commit, which explains nothing about the behaviour.
@@ -109,7 +109,7 @@ func youtrack(t *testing.T) *httptest.Server {
 			_, _ = w.Write([]byte(`{"$type":"Issue"}`))
 			return
 		}
-		if r.URL.Path != "/api/issues/PLF-42" {
+		if r.URL.Path != "/api/issues/ABC-42" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -154,10 +154,10 @@ func TestWhy(t *testing.T) { //nolint:tparallel // subtests share the fixture
 		// the one that actually wrote the line.
 		assert.Contains(t, out.Commit.Subject, "gofmt")
 		require.NotNil(t, out.Previous)
-		assert.Contains(t, out.Previous.Subject, "PLF-42")
+		assert.Contains(t, out.Previous.Subject, "ABC-42")
 
 		require.NotNil(t, out.Task)
-		assert.Equal(t, "PLF-42", out.Task.ID)
+		assert.Equal(t, "ABC-42", out.Task.ID)
 		assert.Equal(t, enrichOK, out.Enrichment)
 		assert.Equal(t, "Создание заказа", out.Task.Summary)
 		assert.ElementsMatch(t,
@@ -214,7 +214,7 @@ func TestWhy_RespectsRole(t *testing.T) {
 	var out WhyResult
 	require.NoError(t, json.Unmarshal([]byte(res.Content[0].Text), &out))
 	require.NotNil(t, out.Task)
-	assert.Equal(t, "PLF-42", out.Task.ID, "the key comes from the commit, not from the tracker")
+	assert.Equal(t, "ABC-42", out.Task.ID, "the key comes from the commit, not from the tracker")
 	assert.Empty(t, out.Task.Summary)
 	assert.Equal(t, enrichNoAccess, out.Enrichment, "the answer says why the summary is missing")
 }
@@ -237,7 +237,7 @@ func TestWhy_TrackerDown(t *testing.T) {
 	var out WhyResult
 	require.NoError(t, json.Unmarshal([]byte(res.Content[0].Text), &out))
 	require.NotNil(t, out.Task)
-	assert.Equal(t, "PLF-42", out.Task.ID)
+	assert.Equal(t, "ABC-42", out.Task.ID)
 	assert.Equal(t, enrichUnavailable, out.Enrichment)
 }
 
@@ -279,7 +279,7 @@ func TestWhy_BySymbolWithoutEngine(t *testing.T) {
 	// Create is declared on line 3 of the fixture file.
 	assert.Equal(t, "apisrv internal/rpc/order.go:3@"+sha, out.Reference)
 	require.NotNil(t, out.Task)
-	assert.Equal(t, "PLF-42", out.Task.ID)
+	assert.Equal(t, "ABC-42", out.Task.ID)
 
 	// A symbol that is not there says so, and says what to do instead.
 	res, _ = s.Call(ctxWithGroups("ringsrv-developers"), ToolWhy, map[string]any{

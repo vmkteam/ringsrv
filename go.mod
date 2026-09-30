@@ -16,7 +16,7 @@ require (
 	github.com/vmkteam/appkit v0.1.2
 	github.com/vmkteam/cron v0.1.5
 	github.com/vmkteam/embedlog v0.1.3
-	github.com/vmkteam/mcpkit v0.1.3
+	github.com/vmkteam/mcpkit v0.1.4
 	github.com/vmkteam/zenrpc-middleware v1.3.2
 	github.com/vmkteam/zenrpc/v2 v2.3.3
 	golang.org/x/sync v0.22.0

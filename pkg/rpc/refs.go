@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/vmkteam/ringsrv/pkg/ring/code"
 
 	"github.com/vmkteam/mcpkit/mcp"
+	"github.com/vmkteam/mcpkit/ratelimit"
 )
 
 // ToolCodeRefs answers "who calls this". An incident rarely needs it — the stack
@@ -75,6 +77,8 @@ type CodeRefsResult struct {
 	// callers are real and the implementors are missing, and halving an answer
 	// silently is worse than not answering.
 	Unsupported string `json:"unsupported,omitempty"`
+	// Budget is the hourly work budget with this lookup paid for.
+	Budget *Budget `json:"budget,omitempty"`
 }
 
 var codeRefsInputSchema = mcp.SchemaFor(CodeRefsArgs{})
@@ -101,9 +105,11 @@ func (s ToolsService) refs(ctx context.Context, arguments map[string]any, rec *a
 		return refuse(rec, *toolErr)
 	}
 
+	started := time.Now()
 	found, err := s.code.Refs(ctx, repo, code.RefsQuery{
 		Ref: args.Ref, Symbol: args.Symbol, Path: args.Path, Kind: kind, Max: args.Max,
 	})
+	ratelimit.ChargeFor(ctx, args.Repo, time.Since(started))
 	if err != nil {
 		return refuse(rec, s.codeError(err, args.Repo, args.Symbol))
 	}
@@ -111,6 +117,7 @@ func (s ToolsService) refs(ctx context.Context, arguments map[string]any, rec *a
 	out := CodeRefsResult{
 		Repo: args.Repo, Ref: found.Ref, Symbol: args.Symbol, Kind: found.Kind,
 		Callers: mcp.Map(found.Callers, newRefEntry(args.Repo)),
+		Budget:  budgetOf(ctx),
 	}
 	if found.Kind == code.KindBoth {
 		out.Unsupported = implementorsRefusal

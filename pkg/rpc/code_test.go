@@ -36,7 +36,7 @@ func codeFixtureLog(t *testing.T, l embedlog.Logger) (svc ToolsService, sha stri
 	write("vendor/lib/lib.go", "package lib\n\nfunc Create() {}\n")
 	write("secrets/server.pem", "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----\n")
 	gittest.Git(t, origin, "add", ".")
-	gittest.Git(t, origin, "commit", "-m", "PLF-1 initial")
+	gittest.Git(t, origin, "commit", "-m", "ABC-1 initial")
 	sha = gittest.Git(t, origin, "rev-parse", "HEAD")
 
 	root := t.TempDir()
@@ -269,12 +269,10 @@ func TestList_CodeTools(t *testing.T) {
 	}
 }
 
-// One SHA lives in one repository. A search asked across several must answer
-// from the one that has the commit and name the ones that do not, rather than
-// fail on them — with repos defaulting to "all", failing meant failing always.
-func TestCodeSearch_ReposWithoutRef(t *testing.T) { //nolint:tparallel // subtests share the fixture
-	t.Parallel()
-
+// searchFixture is two repositories, a and b, each with a commit of its own:
+// one SHA lives in one repository, and a search over both finds it in a alone.
+func searchFixture(t *testing.T) (svc ToolsService, shaA string) {
+	t.Helper()
 	newOrigin := func(file, body, subject string) (string, string) {
 		origin := t.TempDir()
 		gittest.Git(t, origin, "init", "--initial-branch=master")
@@ -283,8 +281,8 @@ func TestCodeSearch_ReposWithoutRef(t *testing.T) { //nolint:tparallel // subtes
 		gittest.Git(t, origin, "commit", "-m", subject)
 		return origin, gittest.Git(t, origin, "rev-parse", "HEAD")
 	}
-	originA, shaA := newOrigin("a.go", "package a\n\nfunc Needle() {}\n", "PLF-1 a")
-	originB, _ := newOrigin("b.go", "package b\n\nfunc Needle() {}\n", "PLF-2 b")
+	originA, shaA := newOrigin("a.go", "package a\n\nfunc Needle() {}\n", "ABC-1 a")
+	originB, _ := newOrigin("b.go", "package b\n\nfunc Needle() {}\n", "ABC-2 b")
 
 	root := t.TempDir()
 	cat, err := target.Parse([]byte(`
@@ -314,7 +312,7 @@ CloneURL      = "file://` + originB + `"
 DefaultBranch = "master"
 `))
 	require.NoError(t, err)
-	s := NewToolsService(ToolsDeps{
+	return NewToolsService(ToolsDeps{
 		Targets: cat,
 		Repos: git.New(git.Options{
 			ReposDir:     filepath.Join(root, "repos"),
@@ -323,7 +321,15 @@ DefaultBranch = "master"
 		}),
 		Sessions: ring.NewSessions(time.Hour, nil),
 		Logger:   embedlog.Logger{},
-	})
+	}), shaA
+}
+
+// One SHA lives in one repository. A search asked across several must answer
+// from the one that has the commit and name the ones that do not, rather than
+// fail on them — with repos defaulting to "all", failing meant failing always.
+func TestCodeSearch_ReposWithoutRef(t *testing.T) { //nolint:tparallel // subtests share the fixture
+	t.Parallel()
+	s, shaA := searchFixture(t)
 	ctx := ctxWithGroups("ringsrv-developers")
 
 	t.Run("searches where the commit is, names where it is not", func(t *testing.T) {

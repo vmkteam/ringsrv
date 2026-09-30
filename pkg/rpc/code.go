@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/vmkteam/ringsrv/pkg/client/codegraph"
 	"github.com/vmkteam/ringsrv/pkg/client/git"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/vmkteam/mcpkit/audit"
 	"github.com/vmkteam/mcpkit/mcp"
+	"github.com/vmkteam/mcpkit/ratelimit"
 )
 
 // Tools that answer about code: an investigation that stops at the symptom ends
@@ -140,6 +142,8 @@ type CodeReadWindowsResult struct {
 	Repo    string           `json:"repo"`
 	Ref     string           `json:"ref"`
 	Windows []CodeReadResult `json:"windows"`
+	// Budget is the hourly work budget with these windows paid for.
+	Budget *Budget `json:"budget,omitempty"`
 }
 
 // readWindows turns the two ways of asking — one path, or a list of windows —
@@ -183,6 +187,9 @@ type CodeReadResult struct {
 	Lines     []string `json:"lines,omitempty"`
 	// DedupOf points at the window this one repeats: read once, lines are there.
 	DedupOf *int `json:"dedup_of,omitempty"`
+	// Budget is the hourly work budget with this read paid for — on the answer
+	// to a single path; a window of a list leaves it to the list.
+	Budget *Budget `json:"budget,omitempty"`
 }
 
 // newCodeReadResult numbers the lines: numbering is a property of the answer,
@@ -221,6 +228,8 @@ type CodeSearchResult struct {
 	// one SHA lives in one repository, and the answer says which it skipped
 	// rather than failing on them.
 	ReposWithoutRef []string `json:"repos_without_ref,omitempty"`
+	// Budget is the hourly work budget with this search paid for.
+	Budget *Budget `json:"budget,omitempty"`
 }
 
 // readCode answers code_read.
@@ -256,9 +265,12 @@ func (s ToolsService) readCode(ctx context.Context, arguments map[string]any, re
 		if dupes[i] >= 0 {
 			continue
 		}
+		started := time.Now()
 		file, err := s.code.Read(ctx, repo, args.Ref, w.Path, code.Window{
 			From: w.LineFrom, To: w.LineTo, Max: args.MaxLines,
 		})
+		// Each window is billed on its own, like a statement of db_query.
+		ratelimit.ChargeFor(ctx, args.Repo, time.Since(started))
 		if err != nil {
 			return refuse(rec, s.codeError(err, args.Repo, w.Path))
 		}
@@ -269,9 +281,11 @@ func (s ToolsService) readCode(ctx context.Context, arguments map[string]any, re
 	rec.Method = ref
 
 	if len(args.Windows) == 0 {
-		return okResultJSON(newCodeReadResult(args.Repo, files[0]), s.env)
+		out := newCodeReadResult(args.Repo, files[0])
+		out.Budget = budgetOf(ctx)
+		return okResultJSON(out, s.env)
 	}
-	out := CodeReadWindowsResult{Repo: args.Repo, Ref: ref, Windows: make([]CodeReadResult, len(windows))}
+	out := CodeReadWindowsResult{Repo: args.Repo, Ref: ref, Windows: make([]CodeReadResult, len(windows)), Budget: budgetOf(ctx)}
 	for i, f := range files {
 		if from := dupes[i]; from >= 0 {
 			// The lines are already in the answer once; this entry says where.
@@ -324,12 +338,18 @@ func (s ToolsService) searchCode(ctx context.Context, arguments map[string]any, 
 		Max:     args.MaxMatches,
 	})
 	if err != nil {
+		// Nothing charged, so the wall clock prices the failed search.
 		return refuse(rec, s.codeError(err, strings.Join(names, ","), args.PathGlob))
+	}
+	// Each repository is billed its own part: they ran at once, so the wall
+	// clock alone would charge for the slowest instead of the work done.
+	for _, w := range found.Work {
+		ratelimit.ChargeFor(ctx, w.Repo, w.Took)
 	}
 
 	rec.Method, rec.Truncated = found.Ref, found.Truncated
 
-	out := CodeSearchResult{Ref: found.Ref, Truncated: found.Truncated, Matches: make([]string, 0, len(found.Matches)), ReposWithoutRef: found.Skipped}
+	out := CodeSearchResult{Ref: found.Ref, Truncated: found.Truncated, Matches: make([]string, 0, len(found.Matches)), ReposWithoutRef: found.Skipped, Budget: budgetOf(ctx)}
 	for _, m := range found.Matches {
 		// git's own convention: ":" around the line number of a match, "-"
 		// around a context line.
@@ -516,7 +536,7 @@ func (s ToolsService) codeReadDescription() string {
 func (s ToolsService) codeSearchDescription() string {
 	var b strings.Builder
 	// repos has always been a list, and the log shows it used one name at a
-	// time — the same query against statsrv, then apisrv, seconds apart.
+	// time — the same query against one service, then another, seconds apart.
 	fmt.Fprintf(&b, "%s · git grep по коммиту; regex: true включает ERE. repos — список: один запрос по нескольким репозиториям = один вызов, а не по вызову на репозиторий (без repos — все ваши). ", strings.ToUpper(s.env))
 	b.WriteString("Ответ — строки «repo path:line: текст»; пусто значит «такой строки в этом коммите нет».")
 	return b.String()

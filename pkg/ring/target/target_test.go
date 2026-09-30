@@ -578,21 +578,21 @@ func TestDatabases_Parse(t *testing.T) {
 func TestDatabases_SchemaRepos(t *testing.T) {
 	t.Parallel()
 	c, err := Parse([]byte(validDBTOML + `
-[Repos.tpsrv]
-CloneURL      = "https://git.example.com/backend/tpsrv.git"
+[Repos.paysrv]
+CloneURL      = "https://git.example.com/backend/paysrv.git"
 DefaultBranch = "master"
 
-[Repos.tpsrv.Layers]
+[Repos.paysrv.Layers]
 db = "internal/store"
 
 [Databases.pg.SchemaRepos]
-billing = ["tpsrv", "apisrv"]
+billing = ["paysrv", "apisrv"]
 `))
 	require.NoError(t, err)
 
 	pg, ok := c.Database("pg")
 	require.True(t, ok)
-	assert.Equal(t, []CodeRef{{Repo: "tpsrv", Layer: "internal/store"}, {Repo: "apisrv", Layer: "pkg/db"}}, pg.CodeRefs("billing"),
+	assert.Equal(t, []CodeRef{{Repo: "paysrv", Layer: "internal/store"}, {Repo: "apisrv", Layer: "pkg/db"}}, pg.CodeRefs("billing"),
 		"the order is the catalogue's — the owner of the schema comes first")
 	assert.Equal(t, []CodeRef{{Repo: "apisrv", Layer: "pkg/db"}}, pg.CodeRefs("public"),
 		"a schema SchemaRepos does not name falls back to Repo")
@@ -613,17 +613,17 @@ billing = ["apisrv"]
 // there is, and a list is how it stops being one service's.
 func TestDatabases_RepoList(t *testing.T) {
 	t.Parallel()
-	const tpsrv = `
-[Repos.tpsrv]
-CloneURL      = "https://git.example.com/backend/tpsrv.git"
+	const paysrv = `
+[Repos.paysrv]
+CloneURL      = "https://git.example.com/backend/paysrv.git"
 DefaultBranch = "master"
 
-[Repos.tpsrv.Layers]
+[Repos.paysrv.Layers]
 db = "internal/store"
 `
-	c, err := Parse([]byte(strings.Replace(validDBTOML, `Repo        = "apisrv"`, `Repo        = ["apisrv", "tpsrv"]`, 1) + tpsrv))
+	c, err := Parse([]byte(strings.Replace(validDBTOML, `Repo        = "apisrv"`, `Repo        = ["apisrv", "paysrv"]`, 1) + paysrv))
 	require.NoError(t, err)
-	assert.Equal(t, []CodeRef{{Repo: "apisrv", Layer: "pkg/db"}, {Repo: "tpsrv", Layer: "internal/store"}},
+	assert.Equal(t, []CodeRef{{Repo: "apisrv", Layer: "pkg/db"}, {Repo: "paysrv", Layer: "internal/store"}},
 		c.Databases["pg"].CodeRefs("public"), "the order is the catalogue's — the owner comes first")
 
 	// Both forms are the same field: a base of one owner still writes a name.
@@ -774,7 +774,7 @@ func TestDatabases_RejectsBroken(t *testing.T) {
 			want: "names no repository",
 		},
 		"schema repos with an unknown repository": {
-			toml: validDBTOML + "\n[Databases.pg.SchemaRepos]\nbilling = [\"tpsrv\"]\n",
+			toml: validDBTOML + "\n[Databases.pg.SchemaRepos]\nbilling = [\"paysrv\"]\n",
 			want: "not a repository",
 		},
 		"schema repos naming one repository twice": {
@@ -908,10 +908,10 @@ func TestIssueRequest(t *testing.T) {
 
 	// Empty means YouTrack, which is what every repository uses today.
 	def := &Repo{}
-	assert.Equal(t, "/api/issues/PLF-1?fields=summary,description,comments(text)", def.IssueRequest("PLF-1"))
+	assert.Equal(t, "/api/issues/ABC-1?fields=summary,description,comments(text)", def.IssueRequest("ABC-1"))
 
 	jira := &Repo{IssuePath: "/rest/api/2/issue/{id}?fields=summary,description,comment"}
-	assert.Equal(t, "/rest/api/2/issue/PLF-1?fields=summary,description,comment", jira.IssueRequest("PLF-1"))
+	assert.Equal(t, "/rest/api/2/issue/ABC-1?fields=summary,description,comment", jira.IssueRequest("ABC-1"))
 }
 
 // A path the profile does not allow would make every `why` answer "tracker

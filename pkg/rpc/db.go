@@ -64,6 +64,8 @@ type DBQueryBatch struct {
 	Driver  string        `json:"driver"`
 	TraceID string        `json:"trace_id,omitempty"`
 	Results []DBQueryItem `json:"results"`
+	// Budget is the hourly work budget with these statements paid for.
+	Budget *Budget `json:"budget,omitempty"`
 }
 
 // DBQueryItem is one statement's answer. The rows travel under data because jq
@@ -114,6 +116,8 @@ type DBSchemaBatch struct {
 	Env     string         `json:"env"`
 	Driver  string         `json:"driver"`
 	Results []DBSchemaItem `json:"results"`
+	// Budget is the hourly work budget with these tables paid for.
+	Budget *Budget `json:"budget,omitempty"`
 }
 
 // DBSchemaItem is one table's schema, or why there is none. A name that does not
@@ -299,6 +303,7 @@ func (s ToolsService) callDBQuery(ctx context.Context, arguments map[string]any)
 			break
 		}
 	}
+	out.Budget = budgetOf(ctx)
 
 	rec.Decision, rec.DenyReason = audit.DecisionAllow, ""
 	res := okResultJSON(out, s.env)
@@ -332,8 +337,9 @@ func (s ToolsService) oneDBQuery(ctx context.Context, args DBQueryArgs, q DBQuer
 		SQL: q.SQL, MaxRows: q.MaxRows, JQ: q.JQ, MaxBytes: args.MaxBytes, Caller: caller,
 	})
 	// Each statement is billed on its own: a batch that ran five did five
-	// statements' worth of work, whatever the wall clock says.
-	ratelimit.Charge(ctx, time.Since(started))
+	// statements' worth of work, whatever the wall clock says. The label is the
+	// database dbTarget resolved before the batch ran, never the caller's word.
+	ratelimit.ChargeFor(ctx, args.Target, time.Since(started))
 	if ferr != nil {
 		terr := s.dbError(ctx, ToolDBQuery, args.Target, ferr, rec)
 		observeDBQuery(args.Target, time.Since(started), outcomeOf(terr.Code))
@@ -393,6 +399,7 @@ func (s ToolsService) callDBIntrospect(ctx context.Context, arguments map[string
 	for i, table := range args.Tables {
 		out.Results[i] = s.oneDBSchema(ctx, d, args, table, i, rec)
 	}
+	out.Budget = budgetOf(ctx)
 
 	observe(ToolDBIntrospect, args.Target, outcomeOK)
 	rec.Decision, rec.DenyReason = audit.DecisionAllow, ""
@@ -430,7 +437,7 @@ func (s ToolsService) oneDBSchema(ctx context.Context, d *target.Database, args 
 	rec.Path = table
 
 	schema, ferr := s.db.Introspect(ctx, args.Target, table)
-	ratelimit.Charge(ctx, time.Since(started))
+	ratelimit.ChargeFor(ctx, args.Target, time.Since(started))
 	if ferr != nil {
 		return DBSchemaItem{Index: index, Table: table, Error: s.dbError(ctx, ToolDBIntrospect, args.Target, ferr, rec)}
 	}

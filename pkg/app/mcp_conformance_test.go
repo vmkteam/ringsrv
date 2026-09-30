@@ -5,8 +5,10 @@ import (
 	"encoding/hex"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/vmkteam/ringsrv/pkg/ring/md"
+	"github.com/vmkteam/ringsrv/pkg/rpc"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -163,6 +165,7 @@ func TestMCPConformance_BothHandshakes(t *testing.T) {
 		got := serveMCP(t, mcptest.Legacy, nil).Initialize(t)
 		assert.Equal(t, "ringsrv", got.ServerInfo.Name)
 		assert.Contains(t, got.Instructions, "api_call", "the instructions name the tools")
+		assert.NotContains(t, got.Instructions, "поле budget", "no budget in the config, none to tell about")
 		// Declared, and no more than this server can keep: nothing here pushes a
 		// notification, so listChanged stays false in all three.
 		require.NotNil(t, got.Capabilities.Tools)
@@ -189,7 +192,8 @@ func TestMCPConformance_Refusals(t *testing.T) {
 	})
 
 	// A 429 without Retry-After is a client that retries immediately and is
-	// refused again.
+	// refused again, and one without a JSON-RPC error in it reaches the model
+	// as "server unavailable" rather than as a refused call.
 	t.Run("over the budget is 429 with Retry-After", func(t *testing.T) {
 		t.Parallel()
 		c := serveMCP(t, mcptest.Modern, func(cfg *Config) {
@@ -207,6 +211,9 @@ func TestMCPConformance_Refusals(t *testing.T) {
 		}
 		require.Equal(t, http.StatusTooManyRequests, refused.Status)
 		assert.NotEmpty(t, refused.Header.Get("Retry-After"), "and it says how long")
+		require.NotNil(t, refused.Error, "an answer to the call: %s", refused.Body)
+		assert.Equal(t, mcp.CodeRateLimited, refused.Error.Code)
+		assert.Contains(t, string(refused.Error.Data), `"reason":"rpm"`)
 	})
 
 	// The modern era mirrors the method into a header so a proxy can route
@@ -248,6 +255,42 @@ func TestMCPConformance_Refusals(t *testing.T) {
 		assert.Equal(t, http.StatusOK, legacy.Status)
 		require.NotNil(t, legacy.Error, "the error is in the envelope, where a legacy client reads it")
 	})
+}
+
+// A spent budget leaves the cheat sheets and the handshake answering: they cost
+// nothing, and they are how a caller learns to spend less — or reconnects to
+// find out. Everything that reaches an upstream is still refused.
+func TestMCPConformance_BudgetSpares(t *testing.T) {
+	t.Parallel()
+	c := serveMCP(t, mcptest.Modern, func(cfg *Config) {
+		cfg.RateLimit = ratelimit.Config{CostBudgetPerHour: time.Nanosecond}
+	})
+	paid := map[string]any{"name": rpc.ToolCodeSearch, "arguments": map[string]any{}}
+
+	require.Equal(t, http.StatusOK, c.Call(t, "tools/call", paid).Status, "the first call spends it")
+	refused := c.Call(t, "tools/call", paid)
+	require.Equal(t, http.StatusTooManyRequests, refused.Status, "%s", refused.Body)
+	require.NotNil(t, refused.Error)
+	assert.Contains(t, string(refused.Error.Data), `"reason":"cost_budget"`)
+
+	// Each helper fails the test on a JSON-RPC error, and the refusal is one.
+	assert.Contains(t, c.Discover(t).Instructions, "поле budget", "a budget in the config is told about")
+	c.Tools(t)
+	c.CallTool(t, rpc.ToolHelp, map[string]any{})
+	c.CallTool(t, rpc.ToolRepoMap, map[string]any{})
+
+	resources := c.Resources(t)
+	require.NotEmpty(t, resources.Resources)
+	c.ReadResource(t, resources.Resources[0].URI)
+
+	prompts := c.Prompts(t)
+	require.NotEmpty(t, prompts.Prompts)
+	p := prompts.Prompts[0]
+	args := make(map[string]string, len(p.Arguments))
+	for _, a := range p.Arguments {
+		args[a.Name] = "apisrv"
+	}
+	c.GetPrompt(t, p.Name, args)
 }
 
 // withAPIKey turns the ladder to api keys: a key with groups the catalogue

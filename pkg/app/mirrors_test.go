@@ -32,7 +32,7 @@ func mirrorApp(t *testing.T, secret string) (*App, string) {
 	gittest.Git(t, origin, "init", "--initial-branch=master")
 	require.NoError(t, os.WriteFile(filepath.Join(origin, "main.go"), []byte("package main\n"), 0o600))
 	gittest.Git(t, origin, "add", ".")
-	gittest.Git(t, origin, "commit", "-m", "PLF-1 initial")
+	gittest.Git(t, origin, "commit", "-m", "ABC-1 initial")
 
 	cat, err := target.Parse([]byte(`
 Env = "dev"
@@ -112,7 +112,7 @@ func TestWebhook_Fetches(t *testing.T) {
 
 	// Prime the mirror, then push something it has not seen.
 	require.NoError(t, a.repos.Ensure(t.Context(), a.targets.Repos["apisrv"].Spec("apisrv")))
-	gittest.Git(t, origin, "commit", "--allow-empty", "-m", "PLF-2 later")
+	gittest.Git(t, origin, "commit", "--allow-empty", "-m", "ABC-2 later")
 	fresh := gittest.Git(t, origin, "rev-parse", "HEAD")
 
 	_, err := a.repos.ResolveSHA(t.Context(), "apisrv", fresh[:10])
@@ -212,7 +212,7 @@ func TestSyncMirrors(t *testing.T) {
 	t.Parallel()
 	a, origin := mirrorApp(t, testWebhookSecret)
 
-	gittest.Git(t, origin, "commit", "--allow-empty", "-m", "PLF-3 while nobody looked")
+	gittest.Git(t, origin, "commit", "--allow-empty", "-m", "ABC-3 while nobody looked")
 	fresh := gittest.Git(t, origin, "rev-parse", "HEAD")
 
 	require.NoError(t, a.syncMirrors(t.Context()))
