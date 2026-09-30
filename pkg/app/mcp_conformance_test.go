@@ -189,7 +189,8 @@ func TestMCPConformance_Refusals(t *testing.T) {
 	})
 
 	// A 429 without Retry-After is a client that retries immediately and is
-	// refused again.
+	// refused again, and one without a JSON-RPC error in it reaches the model
+	// as "server unavailable" rather than as a refused call.
 	t.Run("over the budget is 429 with Retry-After", func(t *testing.T) {
 		t.Parallel()
 		c := serveMCP(t, mcptest.Modern, func(cfg *Config) {
@@ -207,6 +208,9 @@ func TestMCPConformance_Refusals(t *testing.T) {
 		}
 		require.Equal(t, http.StatusTooManyRequests, refused.Status)
 		assert.NotEmpty(t, refused.Header.Get("Retry-After"), "and it says how long")
+		require.NotNil(t, refused.Error, "an answer to the call: %s", refused.Body)
+		assert.Equal(t, mcp.CodeRateLimited, refused.Error.Code)
+		assert.Contains(t, string(refused.Error.Data), `"reason":"rpm"`)
 	})
 
 	// The modern era mirrors the method into a header so a proxy can route
