@@ -51,6 +51,9 @@ func roughly(d time.Duration) string {
 	return s
 }
 
+// methodToolsCall is the MCP method every tool call arrives as.
+const methodToolsCall = "tools/call"
+
 // ExemptFromBudget names the calls the hourly budget does not apply to — it is
 // ratelimit.Config.Exempt. They cost nothing, and they are what a spent budget
 // used to take away first: the cheat sheets that teach a caller to spend less,
@@ -61,7 +64,7 @@ func roughly(d time.Duration) string {
 // concurrency slot.
 func ExemptFromBudget(method, name string) bool {
 	switch method {
-	case "tools/call":
+	case methodToolsCall:
 		return name == ToolHelp || name == ToolRepoMap
 	case "resources/read", "prompts/get",
 		mcpkit.MethodInitialize, "ping", mcpkit.MethodDiscover,
