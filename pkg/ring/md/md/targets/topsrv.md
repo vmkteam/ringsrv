@@ -79,7 +79,7 @@ api_call(calls: [{target: "topsrv", method: "POST", path: "/api/v1/rpc/",
 ```
 api_call(calls: [{target: "topsrv", method: "POST", path: "/api/v1/rpc/",
                   body: "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"host.list\"}",
-                  jq: ".error // [.result[] | select(any(.addresses[]; .address == \"10.0.0.6\")) | .hostname]"}])
+                  jq: ".error // [.result[] | select(any(.addresses[]?; .address == \"10.0.0.6\")) | .hostname]"}])
 ```
 
 Свой `jq` заменяет `DefaultJQ`, поэтому конверт снимается в нём же, а `.error //`

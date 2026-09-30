@@ -269,12 +269,10 @@ func TestList_CodeTools(t *testing.T) {
 	}
 }
 
-// One SHA lives in one repository. A search asked across several must answer
-// from the one that has the commit and name the ones that do not, rather than
-// fail on them — with repos defaulting to "all", failing meant failing always.
-func TestCodeSearch_ReposWithoutRef(t *testing.T) { //nolint:tparallel // subtests share the fixture
-	t.Parallel()
-
+// searchFixture is two repositories, a and b, each with a commit of its own:
+// one SHA lives in one repository, and a search over both finds it in a alone.
+func searchFixture(t *testing.T) (svc ToolsService, shaA string) {
+	t.Helper()
 	newOrigin := func(file, body, subject string) (string, string) {
 		origin := t.TempDir()
 		gittest.Git(t, origin, "init", "--initial-branch=master")
@@ -314,7 +312,7 @@ CloneURL      = "file://` + originB + `"
 DefaultBranch = "master"
 `))
 	require.NoError(t, err)
-	s := NewToolsService(ToolsDeps{
+	return NewToolsService(ToolsDeps{
 		Targets: cat,
 		Repos: git.New(git.Options{
 			ReposDir:     filepath.Join(root, "repos"),
@@ -323,7 +321,15 @@ DefaultBranch = "master"
 		}),
 		Sessions: ring.NewSessions(time.Hour, nil),
 		Logger:   embedlog.Logger{},
-	})
+	}), shaA
+}
+
+// One SHA lives in one repository. A search asked across several must answer
+// from the one that has the commit and name the ones that do not, rather than
+// fail on them — with repos defaulting to "all", failing meant failing always.
+func TestCodeSearch_ReposWithoutRef(t *testing.T) { //nolint:tparallel // subtests share the fixture
+	t.Parallel()
+	s, shaA := searchFixture(t)
 	ctx := ctxWithGroups("ringsrv-developers")
 
 	t.Run("searches where the commit is, names where it is not", func(t *testing.T) {

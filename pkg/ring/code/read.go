@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/vmkteam/ringsrv/pkg/client/git"
 
@@ -114,6 +115,17 @@ type SearchResult struct {
 	// Skipped names the repositories that do not have the commit. One SHA
 	// lives in one repository, and a search is usually asked across several.
 	Skipped []string
+	// Work is how long each repository's part took, a skipped one included —
+	// finding out it lacks the commit may have cost a fetch. The parts run at
+	// once, so the wall clock of the search is the slowest of them, not the
+	// work done.
+	Work []RepoWork
+}
+
+// RepoWork is the time one repository's part of a search took.
+type RepoWork struct {
+	Repo string
+	Took time.Duration
 }
 
 // Search greps every repository given, in parallel — five of them used to mean
@@ -135,6 +147,7 @@ func (s *Manager) Search(ctx context.Context, repos []Repo, q SearchQuery) (*Sea
 		matches   []Match
 		truncated bool
 		skipped   bool
+		took      time.Duration
 	}
 	results := make([]found, len(repos))
 
@@ -142,19 +155,20 @@ func (s *Manager) Search(ctx context.Context, repos []Repo, q SearchQuery) (*Sea
 	g.SetLimit(searchConcurrency)
 	for i, repo := range repos {
 		g.Go(func() error {
+			started := time.Now()
 			sha, err := s.searchRef(gctx, repo, q.Ref, local[i], anyLocal)
 			if err != nil {
 				return err
 			}
 			if sha == "" {
-				results[i] = found{skipped: true}
+				results[i] = found{skipped: true, took: time.Since(started)}
 				return nil
 			}
 			matches, truncated, err := s.grep(gctx, repo, sha, q)
 			if err != nil {
 				return err
 			}
-			results[i] = found{sha: sha, matches: matches, truncated: truncated}
+			results[i] = found{sha: sha, matches: matches, truncated: truncated, took: time.Since(started)}
 			return nil
 		})
 	}
@@ -164,8 +178,9 @@ func (s *Manager) Search(ctx context.Context, repos []Repo, q SearchQuery) (*Sea
 
 	// Merged in the order the repositories were asked about, so two identical
 	// searches read the same way.
-	res := &SearchResult{}
+	res := &SearchResult{Work: make([]RepoWork, len(repos))}
 	for i, r := range results {
+		res.Work[i] = RepoWork{Repo: repos[i].Name, Took: r.took}
 		if r.skipped {
 			res.Skipped = append(res.Skipped, repos[i].Name)
 			continue

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vmkteam/mcpkit"
 	"github.com/vmkteam/mcpkit/ratelimit"
 )
 
@@ -63,7 +64,7 @@ func ExemptFromBudget(method, name string) bool {
 	case "tools/call":
 		return name == ToolHelp || name == ToolRepoMap
 	case "resources/read", "prompts/get",
-		"initialize", "ping", "server/discover",
+		mcpkit.MethodInitialize, "ping", mcpkit.MethodDiscover,
 		"tools/list", "resources/list", "resources/templates/list", "prompts/list":
 		return true
 	}

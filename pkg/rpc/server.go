@@ -42,6 +42,9 @@ type MCPDeps struct {
 	Sessions      *ring.Sessions
 	Logger        embedlog.Logger
 	IsDevel       bool
+	// Budget says the hourly work budget is on, and the instructions then
+	// tell the model how to read it.
+	Budget bool
 }
 
 // NewMCP returns a zenrpc.Server dedicated to MCP traffic — served via
@@ -92,7 +95,7 @@ func NewMCP(d MCPDeps) *zenrpc.Server {
 			Resources: &mcp.ResourcesCapability{},
 			Prompts:   &mcp.PromptsCapability{},
 		},
-		Instructions: instructions(d.Targets.Env),
+		Instructions: instructions(d.Targets.Env, d.Budget),
 		CacheHint:    catalogueCache,
 	}
 

@@ -1,6 +1,10 @@
 package rpc
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/vmkteam/mcpkit/mcp"
+)
 
 // The instructions are the voice of this service: what the model must know
 // before its first call and nothing it must not. They stay here, not in the
@@ -31,9 +35,22 @@ const initInstructions = `ringsrv — MCP-прокси к наблюдаемос
   • ответ фильтруется jq: у большинства таргетов есть DefaultJQ, свой jq передаётся аргументом;
   • ошибка — это документация: TargetUnknown отдаёт список таргетов, PathNotAllowed — паттерны, JQFailed — ключи ответа, AmbiguousSymbol — файлы-кандидаты;
   • пустой ответ — это ответ: «такой строки в коммите нет», «релиз не трогал упавший код». Перебирать запросы не надо;
-  • запись (issue, комментарий, MR) требует аргумента intent и доступна только ролям с этим правом;
-  • у работы часовой бюджет: api_call, db_query и db_introspect отвечают полем budget — сколько потрачено, сколько осталось и когда сбросится. Когда осталось мало — сужай запросы через jq и лимит строк, а не повторяй их. Отказ -32010 по бюджету — не падение сервера: в нём сказано, сколько ждать, а help и repo_map работают и тогда.
+  • запись (issue, комментарий, MR) требует аргумента intent и доступна только ролям с этим правом.
 `
 
-// instructions fills the contour into the sheet above.
-func instructions(env string) string { return fmt.Sprintf(initInstructions, env) }
+// budgetInstructions is added only on an instance with an hourly budget: told
+// about a field that never comes, the model waits for it or goes looking. The
+// %d is mcp.CodeRateLimited, the code a refusal by the budget arrives with.
+const budgetInstructions = `
+У работы часовой бюджет. Ответ каждого инструмента, который его тратит, и help несут поле budget: сколько потрачено, сколько осталось и когда сбросится. Когда осталось мало — сужай запросы (jq, лимит строк, окна поменьше), а не повторяй их. Отказ %d по бюджету — не падение сервера: в нём сказано, сколько ждать, а help, repo_map, ресурсы и промпты работают и тогда.
+`
+
+// instructions fills the contour into the sheet above, and adds the budget to
+// it when the instance has one.
+func instructions(env string, budget bool) string {
+	text := fmt.Sprintf(initInstructions, env)
+	if budget {
+		text += fmt.Sprintf(budgetInstructions, mcp.CodeRateLimited)
+	}
+	return text
+}

@@ -165,6 +165,7 @@ func TestMCPConformance_BothHandshakes(t *testing.T) {
 		got := serveMCP(t, mcptest.Legacy, nil).Initialize(t)
 		assert.Equal(t, "ringsrv", got.ServerInfo.Name)
 		assert.Contains(t, got.Instructions, "api_call", "the instructions name the tools")
+		assert.NotContains(t, got.Instructions, "поле budget", "no budget in the config, none to tell about")
 		// Declared, and no more than this server can keep: nothing here pushes a
 		// notification, so listChanged stays false in all three.
 		require.NotNil(t, got.Capabilities.Tools)
@@ -272,26 +273,24 @@ func TestMCPConformance_BudgetSpares(t *testing.T) {
 	require.NotNil(t, refused.Error)
 	assert.Contains(t, string(refused.Error.Data), `"reason":"cost_budget"`)
 
+	// Each helper fails the test on a JSON-RPC error, and the refusal is one.
+	assert.Contains(t, c.Discover(t).Instructions, "поле budget", "a budget in the config is told about")
+	c.Tools(t)
+	c.CallTool(t, rpc.ToolHelp, map[string]any{})
+	c.CallTool(t, rpc.ToolRepoMap, map[string]any{})
+
 	resources := c.Resources(t)
 	require.NotEmpty(t, resources.Resources)
+	c.ReadResource(t, resources.Resources[0].URI)
+
 	prompts := c.Prompts(t)
 	require.NotEmpty(t, prompts.Prompts)
-
-	spared := map[string]struct {
-		method string
-		params any
-	}{
-		"help":            {"tools/call", map[string]any{"name": rpc.ToolHelp, "arguments": map[string]any{}}},
-		"repo_map":        {"tools/call", map[string]any{"name": rpc.ToolRepoMap, "arguments": map[string]any{}}},
-		"resources/read":  {"resources/read", map[string]any{"uri": resources.Resources[0].URI}},
-		"prompts/get":     {"prompts/get", map[string]any{"name": prompts.Prompts[0].Name}},
-		"tools/list":      {"tools/list", nil},
-		"server/discover": {"server/discover", nil},
+	p := prompts.Prompts[0]
+	args := make(map[string]string, len(p.Arguments))
+	for _, a := range p.Arguments {
+		args[a.Name] = "apisrv"
 	}
-	for name, call := range spared {
-		res := c.Call(t, call.method, call.params)
-		assert.NotEqualf(t, http.StatusTooManyRequests, res.Status, "%s refused with the budget spent: %s", name, res.Body)
-	}
+	c.GetPrompt(t, p.Name, args)
 }
 
 // withAPIKey turns the ladder to api keys: a key with groups the catalogue

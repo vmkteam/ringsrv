@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/vmkteam/ringsrv/pkg/ring/code"
 
 	"github.com/vmkteam/mcpkit/mcp"
+	"github.com/vmkteam/mcpkit/ratelimit"
 )
 
 // ToolWhy answers "why is this code like this" — a question the code cannot
@@ -60,6 +62,8 @@ type WhyResult struct {
 	// "no-access", "unavailable" or "no-task". Without it a missing summary is
 	// indistinguishable from an issue with no summary.
 	Enrichment string `json:"enrichment"`
+	// Budget is the hourly work budget with the blame and the tracker paid for.
+	Budget *Budget `json:"budget,omitempty"`
 }
 
 var whyInputSchema = mcp.SchemaFor(WhyArgs{})
@@ -85,9 +89,11 @@ func (s ToolsService) why(ctx context.Context, arguments map[string]any, rec *au
 		return refuse(rec, *toolErr)
 	}
 
+	started := time.Now()
 	chain, err := s.code.Why(ctx, repo, code.WhyQuery{
 		Ref: args.Ref, Path: args.Path, Line: args.Line, Symbol: args.Symbol,
 	})
+	ratelimit.ChargeFor(ctx, args.Repo, time.Since(started))
 	if err != nil {
 		return refuse(rec, s.codeError(err, args.Repo, args.Path))
 	}
@@ -103,6 +109,7 @@ func (s ToolsService) why(ctx context.Context, arguments map[string]any, rec *au
 	}
 	if chain.TaskID == "" {
 		out.Enrichment = enrichNoTask
+		out.Budget = budgetOf(ctx)
 		return okResultJSON(out, s.env)
 	}
 	out.Task = &WhyTask{ID: chain.TaskID}
@@ -114,6 +121,7 @@ func (s ToolsService) why(ctx context.Context, arguments map[string]any, rec *au
 	if task != nil {
 		out.Task = task
 	}
+	out.Budget = budgetOf(ctx)
 	return okResultJSON(out, s.env)
 }
 
@@ -137,7 +145,10 @@ func (s ToolsService) issue(ctx context.Context, repo code.Repo, id string) (*Wh
 		return nil, enrichNoAccess
 	}
 
+	started := time.Now()
 	issue, err := s.code.Issue(ctx, profile, repo, id)
+	// The tracker is a target of its own, billed under its catalogue name.
+	ratelimit.ChargeFor(ctx, name, time.Since(started))
 	switch {
 	case errors.Is(err, code.ErrNoTracker):
 		return nil, enrichNoAccess

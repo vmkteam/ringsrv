@@ -713,7 +713,7 @@ func TestCall_ToolTheRoleDoesNotGrantIsRefused(t *testing.T) {
 // The instructions promise the tools by name and the cheat sheet by URI.
 func TestInstructions_NameDBTools(t *testing.T) {
 	t.Parallel()
-	text := instructions("dev")
+	text := instructions("dev", false)
 	for _, want := range []string{ToolDBQuery, ToolDBIntrospect, "ringsrv://tools/db.md"} {
 		assert.Contains(t, text, want)
 	}
