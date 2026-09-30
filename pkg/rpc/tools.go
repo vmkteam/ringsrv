@@ -345,7 +345,7 @@ func (s ToolsService) callAPI(ctx context.Context, arguments map[string]any) mcp
 	}
 
 	items := s.runAPIBatch(ctx, acc, args, rec)
-	out := APICallBatch{Env: s.env, TraceID: rec.TraceID, Results: items}
+	out := APICallBatch{Env: s.env, TraceID: rec.TraceID, Results: items, Budget: budgetOf(ctx)}
 	for i := range items {
 		out.Truncated = out.Truncated || items[i].Truncated
 	}

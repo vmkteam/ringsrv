@@ -65,6 +65,8 @@ type APICallBatch struct {
 	// Truncated says at least one answer is incomplete — cut to its own limit or
 	// dropped by the batch budget — without scanning the list for it.
 	Truncated bool `json:"truncated,omitempty"`
+	// Budget is the hourly work budget with this batch paid for.
+	Budget *Budget `json:"budget,omitempty"`
 }
 
 // APICallItem is what one call in the batch produced — either an answer or the

@@ -64,6 +64,8 @@ type DBQueryBatch struct {
 	Driver  string        `json:"driver"`
 	TraceID string        `json:"trace_id,omitempty"`
 	Results []DBQueryItem `json:"results"`
+	// Budget is the hourly work budget with these statements paid for.
+	Budget *Budget `json:"budget,omitempty"`
 }
 
 // DBQueryItem is one statement's answer. The rows travel under data because jq
@@ -114,6 +116,8 @@ type DBSchemaBatch struct {
 	Env     string         `json:"env"`
 	Driver  string         `json:"driver"`
 	Results []DBSchemaItem `json:"results"`
+	// Budget is the hourly work budget with these tables paid for.
+	Budget *Budget `json:"budget,omitempty"`
 }
 
 // DBSchemaItem is one table's schema, or why there is none. A name that does not
@@ -299,6 +303,7 @@ func (s ToolsService) callDBQuery(ctx context.Context, arguments map[string]any)
 			break
 		}
 	}
+	out.Budget = budgetOf(ctx)
 
 	rec.Decision, rec.DenyReason = audit.DecisionAllow, ""
 	res := okResultJSON(out, s.env)
@@ -394,6 +399,7 @@ func (s ToolsService) callDBIntrospect(ctx context.Context, arguments map[string
 	for i, table := range args.Tables {
 		out.Results[i] = s.oneDBSchema(ctx, d, args, table, i, rec)
 	}
+	out.Budget = budgetOf(ctx)
 
 	observe(ToolDBIntrospect, args.Target, outcomeOK)
 	rec.Decision, rec.DenyReason = audit.DecisionAllow, ""

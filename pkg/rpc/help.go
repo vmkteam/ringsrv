@@ -50,6 +50,9 @@ type HelpResult struct {
 	Env     string      `json:"env"`
 	Results []HelpItem  `json:"results,omitempty"`
 	Sheets  []HelpSheet `json:"sheets,omitempty"`
+	// Budget is where the caller stands. help is exempt from it, and so the
+	// one call that still answers when it is spent.
+	Budget *Budget `json:"budget,omitempty"`
 }
 
 // HelpItem is one sheet, or why there is none under that name. A name nobody
@@ -179,7 +182,7 @@ func (s ToolsService) callHelp(ctx context.Context, arguments map[string]any) mc
 	if len(args.Names) == 0 {
 		observe(ToolHelp, "-", outcomeOK)
 		rec.Decision, rec.DenyReason = audit.DecisionAllow, ""
-		return okResultJSON(HelpResult{Env: s.env, Sheets: sheets}, s.env)
+		return okResultJSON(HelpResult{Env: s.env, Sheets: sheets, Budget: budgetOf(ctx)}, s.env)
 	}
 	if err := checkBatch(len(args.Names), maxHelpBatch, "names"); err != nil {
 		observe(ToolHelp, "-", outcomeBadArgs)
@@ -191,7 +194,7 @@ func (s ToolsService) callHelp(ctx context.Context, arguments map[string]any) mc
 	// Served from the binary, so there is nothing to overlap: the list saves
 	// round trips through the model, not I/O.
 	asked := mcp.Map(args.Names, strings.TrimSpace)
-	out := HelpResult{Env: s.env, Results: make([]HelpItem, len(asked))}
+	out := HelpResult{Env: s.env, Results: make([]HelpItem, len(asked)), Budget: budgetOf(ctx)}
 	for i, name := range asked {
 		out.Results[i] = HelpItem{Index: i, Name: name}
 

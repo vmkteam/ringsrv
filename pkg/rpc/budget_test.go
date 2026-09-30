@@ -135,3 +135,92 @@ func TestChargesAreLabelledByTarget(t *testing.T) {
 		assert.Equal(t, before+3, charges(t, "pg"), "and one per table introspected")
 	})
 }
+
+// Every answer that spends the budget says where it stands, and so does help,
+// the call a caller makes to find out. Without a budget the field is not there
+// at all. Not parallel: the subtests share one fake database.
+func TestAnswersCarryTheBudget(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(upstream.Close)
+	api := batchService(t, upstream.URL, embedlog.Logger{})
+	db := newDBFixture(t, embedlog.Logger{})
+
+	calls := map[string]struct {
+		ctx    context.Context
+		call   func(ctx context.Context) (mcp.ToolCallResult, error)
+		budget func(t *testing.T, res mcp.ToolCallResult) *Budget
+	}{
+		ToolAPICall: {
+			ctxWithGroups("ringsrv-users"),
+			func(ctx context.Context) (mcp.ToolCallResult, error) {
+				return api.Call(ctx, ToolAPICall, commitCalls(projectPaths(1)...))
+			},
+			func(t *testing.T, res mcp.ToolCallResult) *Budget { return decodeBatch(t, res).Budget },
+		},
+		ToolDBQuery: {
+			ctxWithGroups("analysts"),
+			func(ctx context.Context) (mcp.ToolCallResult, error) {
+				return db.Call(ctx, ToolDBQuery, dbArgs(map[string]any{"target": "pg", "sql": "SELECT 1"}))
+			},
+			func(t *testing.T, res mcp.ToolCallResult) *Budget { return decodeText[DBQueryBatch](t, res).Budget },
+		},
+		ToolDBIntrospect: {
+			ctxWithGroups("analysts"),
+			func(ctx context.Context) (mcp.ToolCallResult, error) {
+				return db.Call(ctx, ToolDBIntrospect, introArgs(map[string]any{"target": "pg", "table": "users"}))
+			},
+			func(t *testing.T, res mcp.ToolCallResult) *Budget { return decodeText[DBSchemaBatch](t, res).Budget },
+		},
+		ToolHelp: {
+			ctxWithGroups("analysts"),
+			func(ctx context.Context) (mcp.ToolCallResult, error) {
+				return db.Call(ctx, ToolHelp, map[string]any{})
+			},
+			func(t *testing.T, res mcp.ToolCallResult) *Budget { return decodeHelp(t, res).Budget },
+		},
+	}
+	for name, c := range calls {
+		t.Run(name, func(t *testing.T) {
+			res := throughLimiter(t, c.ctx, func(ctx context.Context) mcp.ToolCallResult {
+				r, err := c.call(ctx)
+				require.NoError(t, err)
+				require.False(t, r.IsError, r.Content[0].Text)
+				return r
+			})
+			b := c.budget(t, res)
+			require.NotNil(t, b, res.Content[0].Text)
+			assert.Equal(t, "1h", b.Limit)
+			assert.NotEmpty(t, b.Used)
+			assert.NotEmpty(t, b.Left)
+			assert.NotEmpty(t, b.ResetIn)
+
+			res, err := c.call(c.ctx)
+			require.NoError(t, err)
+			assert.Nil(t, c.budget(t, res), "no limiter, no budget to report")
+			assert.NotContains(t, res.Content[0].Text, `"budget"`)
+		})
+	}
+}
+
+func TestRoughly(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, "0s"},
+		{-time.Second, "0s"},
+		{1400 * time.Millisecond, "1s"},
+		{20 * time.Minute, "20m"},
+		{12*time.Minute + 30*time.Second, "12m30s"},
+		{time.Hour, "1h"},
+		{time.Hour + 5*time.Minute, "1h5m"},
+		{59*time.Minute + 59*time.Second + 600, "59m59s"},
+	}
+	for _, tc := range tests {
+		assert.Equalf(t, tc.want, roughly(tc.d), "%d", tc.d)
+	}
+}
