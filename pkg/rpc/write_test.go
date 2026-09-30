@@ -80,7 +80,7 @@ func writeUpstream(t *testing.T, calls *atomic.Int64) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"PLF-1"}`))
+		_, _ = w.Write([]byte(`{"id":"ABC-1"}`))
 	}))
 	t.Cleanup(srv.Close)
 	return srv

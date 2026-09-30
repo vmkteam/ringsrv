@@ -36,7 +36,7 @@ func codeFixtureLog(t *testing.T, l embedlog.Logger) (svc ToolsService, sha stri
 	write("vendor/lib/lib.go", "package lib\n\nfunc Create() {}\n")
 	write("secrets/server.pem", "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----\n")
 	gittest.Git(t, origin, "add", ".")
-	gittest.Git(t, origin, "commit", "-m", "PLF-1 initial")
+	gittest.Git(t, origin, "commit", "-m", "ABC-1 initial")
 	sha = gittest.Git(t, origin, "rev-parse", "HEAD")
 
 	root := t.TempDir()
@@ -281,8 +281,8 @@ func searchFixture(t *testing.T) (svc ToolsService, shaA string) {
 		gittest.Git(t, origin, "commit", "-m", subject)
 		return origin, gittest.Git(t, origin, "rev-parse", "HEAD")
 	}
-	originA, shaA := newOrigin("a.go", "package a\n\nfunc Needle() {}\n", "PLF-1 a")
-	originB, _ := newOrigin("b.go", "package b\n\nfunc Needle() {}\n", "PLF-2 b")
+	originA, shaA := newOrigin("a.go", "package a\n\nfunc Needle() {}\n", "ABC-1 a")
+	originB, _ := newOrigin("b.go", "package b\n\nfunc Needle() {}\n", "ABC-2 b")
 
 	root := t.TempDir()
 	cat, err := target.Parse([]byte(`

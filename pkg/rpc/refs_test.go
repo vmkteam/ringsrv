@@ -57,7 +57,7 @@ func (c Cache) OrderByID(id int) int {
 `)
 	write("vendor/lib/lib.go", "package lib\n\nfunc OrderByID(id int) int { return id }\n")
 	gittest.Git(t, origin, "add", ".")
-	gittest.Git(t, origin, "commit", "-m", "PLF-1 initial")
+	gittest.Git(t, origin, "commit", "-m", "ABC-1 initial")
 	sha = gittest.Git(t, origin, "rev-parse", "HEAD")
 
 	root := t.TempDir()

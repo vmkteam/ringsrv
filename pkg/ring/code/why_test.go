@@ -19,8 +19,8 @@ func TestReformatSubjects(t *testing.T) {
 		assert.True(t, reformatRe.MatchString(s), s)
 	}
 	for _, s := range []string{
-		"PLF-42 add order creation",
-		"fix panic in ProducerImageIDs",
+		"ABC-42 add order creation",
+		"fix panic in PriceTotal",
 		"wrap with fmt.Errorf",
 		"rename column in migration",
 		"format prices",
@@ -36,6 +36,6 @@ func TestReformatSubjects(t *testing.T) {
 func TestReformatHides(t *testing.T) {
 	t.Parallel()
 	assert.True(t, reformatHides("gofmt and lint fixes", ""))
-	assert.False(t, reformatHides("PLF-1 fix lint", "PLF-1"), "the key wins over the wording")
+	assert.False(t, reformatHides("ABC-1 fix lint", "ABC-1"), "the key wins over the wording")
 	assert.False(t, reformatHides("add order creation", ""), "not a reformat at all")
 }

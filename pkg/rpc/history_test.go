@@ -29,12 +29,12 @@ func historyFixture(t *testing.T) (svc ToolsService, first, second, third string
 
 	write("internal/rpc/order.go", "package rpc\n\nfunc Create() error {\n\treturn nil\n}\n")
 	gittest.Git(t, origin, "add", ".")
-	gittest.Git(t, origin, "commit", "-m", "PLF-1 initial")
+	gittest.Git(t, origin, "commit", "-m", "ABC-1 initial")
 	first = gittest.Git(t, origin, "rev-parse", "HEAD")
 
 	write("internal/rpc/order.go", "package rpc\n\nfunc Create() error {\n\tctxTimeout := 5\n\t_ = ctxTimeout\n\treturn nil\n}\n")
 	gittest.Git(t, origin, "add", ".")
-	gittest.Git(t, origin, "commit", "-m", "PLF-2 add timeout")
+	gittest.Git(t, origin, "commit", "-m", "ABC-2 add timeout")
 	second = gittest.Git(t, origin, "rev-parse", "HEAD")
 
 	write("README.md", "# apisrv\n")
@@ -120,7 +120,7 @@ func TestCodeHistory(t *testing.T) { //nolint:tparallel // subtests share the fi
 		require.Len(t, out.Commits, 2, "both commits touched the body of Create")
 		assert.Equal(t, second, out.Commits[0].SHA, "newest first")
 		require.NotNil(t, out.Commits[0].Task)
-		assert.Equal(t, "PLF-2", *out.Commits[0].Task)
+		assert.Equal(t, "ABC-2", *out.Commits[0].Task)
 	})
 
 	t.Run("blame: who wrote this line", func(t *testing.T) {

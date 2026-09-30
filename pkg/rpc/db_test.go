@@ -595,8 +595,8 @@ func TestDBQueryDescriptionMarksEmptyBases(t *testing.T) {
 // the hint splits only when a single path_glob would have to mean two.
 func TestCodeHint(t *testing.T) {
 	t.Parallel()
-	same := codeHint("users", []target.CodeRef{{Repo: "apisrv", Layer: "pkg/db"}, {Repo: "tpsrv", Layer: "pkg/db"}})
-	assert.Equal(t, `enum'ы и модели — code_search("users", repos: ["apisrv", "tpsrv"], path_glob: "pkg/db/**")`, same)
+	same := codeHint("users", []target.CodeRef{{Repo: "apisrv", Layer: "pkg/db"}, {Repo: "paysrv", Layer: "pkg/db"}})
+	assert.Equal(t, `enum'ы и модели — code_search("users", repos: ["apisrv", "paysrv"], path_glob: "pkg/db/**")`, same)
 
 	one := codeHint("users", []target.CodeRef{{Repo: "apisrv", Layer: "pkg/db"}})
 	assert.Equal(t, `enum'ы и модели — code_search("users", repos: ["apisrv"], path_glob: "pkg/db/**")`, one)

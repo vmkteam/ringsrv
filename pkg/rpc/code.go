@@ -536,7 +536,7 @@ func (s ToolsService) codeReadDescription() string {
 func (s ToolsService) codeSearchDescription() string {
 	var b strings.Builder
 	// repos has always been a list, and the log shows it used one name at a
-	// time — the same query against statsrv, then apisrv, seconds apart.
+	// time — the same query against one service, then another, seconds apart.
 	fmt.Fprintf(&b, "%s · git grep по коммиту; regex: true включает ERE. repos — список: один запрос по нескольким репозиториям = один вызов, а не по вызову на репозиторий (без repos — все ваши). ", strings.ToUpper(s.env))
 	b.WriteString("Ответ — строки «repo path:line: текст»; пусто значит «такой строки в этом коммите нет».")
 	return b.String()

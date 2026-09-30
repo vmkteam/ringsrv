@@ -268,7 +268,7 @@ type Database struct {
 }
 
 // RepoList is one or more repository names in a field that reads as one:
-// Repo = "apisrv" or Repo = ["statsrv", "asksrv"].
+// Repo = "apisrv" or Repo = ["billing", "search"].
 type RepoList []string
 
 // UnmarshalTOML accepts both forms.
