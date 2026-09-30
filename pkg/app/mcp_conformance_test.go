@@ -5,8 +5,10 @@ import (
 	"encoding/hex"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/vmkteam/ringsrv/pkg/ring/md"
+	"github.com/vmkteam/ringsrv/pkg/rpc"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -252,6 +254,44 @@ func TestMCPConformance_Refusals(t *testing.T) {
 		assert.Equal(t, http.StatusOK, legacy.Status)
 		require.NotNil(t, legacy.Error, "the error is in the envelope, where a legacy client reads it")
 	})
+}
+
+// A spent budget leaves the cheat sheets and the handshake answering: they cost
+// nothing, and they are how a caller learns to spend less — or reconnects to
+// find out. Everything that reaches an upstream is still refused.
+func TestMCPConformance_BudgetSpares(t *testing.T) {
+	t.Parallel()
+	c := serveMCP(t, mcptest.Modern, func(cfg *Config) {
+		cfg.RateLimit = ratelimit.Config{CostBudgetPerHour: time.Nanosecond}
+	})
+	paid := map[string]any{"name": rpc.ToolCodeSearch, "arguments": map[string]any{}}
+
+	require.Equal(t, http.StatusOK, c.Call(t, "tools/call", paid).Status, "the first call spends it")
+	refused := c.Call(t, "tools/call", paid)
+	require.Equal(t, http.StatusTooManyRequests, refused.Status, "%s", refused.Body)
+	require.NotNil(t, refused.Error)
+	assert.Contains(t, string(refused.Error.Data), `"reason":"cost_budget"`)
+
+	resources := c.Resources(t)
+	require.NotEmpty(t, resources.Resources)
+	prompts := c.Prompts(t)
+	require.NotEmpty(t, prompts.Prompts)
+
+	spared := map[string]struct {
+		method string
+		params any
+	}{
+		"help":            {"tools/call", map[string]any{"name": rpc.ToolHelp, "arguments": map[string]any{}}},
+		"repo_map":        {"tools/call", map[string]any{"name": rpc.ToolRepoMap, "arguments": map[string]any{}}},
+		"resources/read":  {"resources/read", map[string]any{"uri": resources.Resources[0].URI}},
+		"prompts/get":     {"prompts/get", map[string]any{"name": prompts.Prompts[0].Name}},
+		"tools/list":      {"tools/list", nil},
+		"server/discover": {"server/discover", nil},
+	}
+	for name, call := range spared {
+		res := c.Call(t, call.method, call.params)
+		assert.NotEqualf(t, http.StatusTooManyRequests, res.Status, "%s refused with the budget spent: %s", name, res.Body)
+	}
 }
 
 // withAPIKey turns the ladder to api keys: a key with groups the catalogue
