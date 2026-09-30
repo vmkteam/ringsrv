@@ -332,8 +332,9 @@ func (s ToolsService) oneDBQuery(ctx context.Context, args DBQueryArgs, q DBQuer
 		SQL: q.SQL, MaxRows: q.MaxRows, JQ: q.JQ, MaxBytes: args.MaxBytes, Caller: caller,
 	})
 	// Each statement is billed on its own: a batch that ran five did five
-	// statements' worth of work, whatever the wall clock says.
-	ratelimit.Charge(ctx, time.Since(started))
+	// statements' worth of work, whatever the wall clock says. The label is the
+	// database dbTarget resolved before the batch ran, never the caller's word.
+	ratelimit.ChargeFor(ctx, args.Target, time.Since(started))
 	if ferr != nil {
 		terr := s.dbError(ctx, ToolDBQuery, args.Target, ferr, rec)
 		observeDBQuery(args.Target, time.Since(started), outcomeOf(terr.Code))
@@ -430,7 +431,7 @@ func (s ToolsService) oneDBSchema(ctx context.Context, d *target.Database, args 
 	rec.Path = table
 
 	schema, ferr := s.db.Introspect(ctx, args.Target, table)
-	ratelimit.Charge(ctx, time.Since(started))
+	ratelimit.ChargeFor(ctx, args.Target, time.Since(started))
 	if ferr != nil {
 		return DBSchemaItem{Index: index, Table: table, Error: s.dbError(ctx, ToolDBIntrospect, args.Target, ferr, rec)}
 	}

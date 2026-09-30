@@ -562,8 +562,10 @@ func (s ToolsService) oneAPICall(ctx context.Context, acc target.Access, call AP
 	})
 	elapsed := time.Since(start)
 	// Bill each call separately: the batch ran them at once, so the wall clock
-	// alone would charge for the longest one instead of the work done.
-	ratelimit.Charge(ctx, elapsed)
+	// alone would charge for the longest one instead of the work done. Labelled
+	// by the target, which prepareCall has found in the catalogue: a name the
+	// caller made up never gets this far, so it cannot become a series.
+	ratelimit.ChargeFor(ctx, call.Target, elapsed)
 	item.DurationMS = elapsed.Milliseconds()
 
 	if callErr != nil {
