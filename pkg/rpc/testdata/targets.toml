@@ -118,14 +118,14 @@ SkipDefaultHeaders = true
 Headers            = ["Authorization: Bearer slack-token"]
 AllowMethods       = ["GET"]
 AllowPaths         = [
-  "^/api/search\\.messages$",
+  "^/api/assistant\\.search\\.context$",
   "^/api/conversations\\.replies$",
   "^/api/conversations\\.list$",
   "^/api/conversations\\.history$",
   "^/api/users\\.info$",
 ]
-AllowQueryParams   = ["query", "channel", "ts", "oldest", "latest", "limit<=100", "cursor", "user", "types", "sort", "sort_dir", "inclusive", "highlight"]
-TimeParams         = ["oldest", "latest"]
+AllowQueryParams   = ["query", "after", "before", "channel", "ts", "oldest", "latest", "limit<=100", "cursor", "user", "types", "sort", "sort_dir", "inclusive", "highlight"]
+TimeParams         = ["oldest", "latest", "after", "before"]
 TimeFormat         = "unix"
 
 [Profiles.topsrv]
