@@ -393,6 +393,7 @@ func (p *Profile) validate(env string) error {
 		}
 	}
 	errs = append(errs, p.validateQueryParams()...)
+	errs = append(errs, p.validateFiles()...)
 	if p.MaxBytes < 0 {
 		errs = append(errs, fmt.Errorf("MaxBytes %d must be >= 0", p.MaxBytes))
 	}
@@ -803,6 +804,47 @@ func (p *Profile) validateQueryParams() []error {
 	}
 	return errs
 }
+
+// validateFiles checks what the file route needs from its profile: a provider
+// this server knows, the path in the allowlist — the route answers only what
+// the allowlist let through — the file id among the parameters when they are
+// listed, and an Authorization header, the one credential the download carries.
+func (p *Profile) validateFiles() []error {
+	if p.Files == "" {
+		return nil
+	}
+	if p.Files != FilesSlack {
+		return []error{fmt.Errorf("field Files %q: the only provider is %q", p.Files, FilesSlack)}
+	}
+	var errs []error
+	if !p.Allows(http.MethodGet, FilesPath) {
+		errs = append(errs, fmt.Errorf("field Files is set but AllowPaths does not let GET %s through — the route would never be reached", FilesPath))
+	}
+	if _, ok := p.queryRules[filesIDParam]; p.QueryGuarded() && !ok {
+		errs = append(errs, fmt.Errorf("field Files is set but AllowQueryParams has no %q — no call could name a file", filesIDParam))
+	}
+	if !headerNames(p.headers)["authorization"] {
+		errs = append(errs, errors.New("field Files is set but the profile sends no Authorization header — the download would go without a credential"))
+	}
+	for _, path := range slackFileMethods {
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			if p.Allows(method, path) {
+				errs = append(errs, fmt.Errorf("field Files is set and AllowPaths lets %s %s through: with files:read it describes the files "+
+					"of private channels and direct messages too, which the file route exists to keep out", method, path))
+				break
+			}
+		}
+	}
+	return errs
+}
+
+// slackFileMethods describe files wherever they are shared. The file route
+// reads them for the model and checks what it read; a profile that let the
+// model call them itself would skip the check.
+var slackFileMethods = []string{"/api/files.info", "/api/files.list", "/api/files.remote.info", "/api/files.remote.list"}
+
+// filesIDParam is the parameter that names the file on FilesPath.
+const filesIDParam = "file"
 
 // validateQueryPair accepts one "key=value" for Query: the key non-empty and
 // neither side carrying a separator the join would read as a second pair.

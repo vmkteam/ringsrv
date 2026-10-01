@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vmkteam/ringsrv/pkg/ring/files"
 	"github.com/vmkteam/ringsrv/pkg/ring/target"
 
 	"github.com/vmkteam/embedlog"
@@ -74,6 +75,10 @@ type auditRecord struct {
 	// Cache says the answer was served from an identical call in the same batch.
 	Cache          string
 	UpstreamStatus int
+	// File is what the file route served; Image says it went out as a picture,
+	// which no redaction rule can have read.
+	File  *files.Meta
+	Image bool
 }
 
 // core is the record as the library writes it: model-authored text in Query, the
@@ -100,6 +105,17 @@ func (r auditRecord) core() audit.Record {
 		"write", r.Write,
 		"cache", r.Cache,
 		"upstream_status", r.UpstreamStatus,
+	}
+	// Only on the records of the file route: every other record would carry
+	// five empty keys.
+	if f := r.File; f != nil {
+		out.Extra = append(out.Extra,
+			"file_name", r.maskForLog(f.Name),
+			"file_type", f.FileType,
+			"file_size", f.Size,
+			"file_channels", strings.Join(f.Channels, ","),
+			"image", r.Image,
+		)
 	}
 	return out
 }

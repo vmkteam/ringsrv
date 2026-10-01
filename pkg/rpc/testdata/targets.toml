@@ -123,10 +123,12 @@ AllowPaths         = [
   "^/api/conversations\\.list$",
   "^/api/conversations\\.history$",
   "^/api/users\\.info$",
+  "^/files/download$",
 ]
-AllowQueryParams   = ["query", "after", "before", "channel", "ts", "oldest", "latest", "limit<=100", "cursor", "user", "types", "sort", "sort_dir", "inclusive", "highlight"]
+AllowQueryParams   = ["query", "after", "before", "channel", "ts", "oldest", "latest", "limit<=1000", "cursor", "user", "types", "sort", "sort_dir", "inclusive", "highlight", "file", "offset", "grep"]
 TimeParams         = ["oldest", "latest", "after", "before"]
 TimeFormat         = "unix"
+Files              = "slack"
 
 [Profiles.topsrv]
 Description     = "prod · topsrv: хосты, метрики, алерты, CVE, логи nginx; JSON-RPC в body"

@@ -83,6 +83,11 @@ type Profile struct {
 	// of Write/ReadOnlyPost must be set when AllowMethods goes beyond GET.
 	ReadOnlyPost bool
 
+	// Files names the provider behind FilesPath, a path this server answers
+	// itself instead of passing it on: the file's metadata from the upstream,
+	// the check that it is public, then its bytes. Only FilesSlack exists.
+	Files string
+
 	name string
 	// Derived from the public fields by validate(), so per-call lookups repeat
 	// no work whose answer cannot change.
@@ -191,6 +196,25 @@ func (p *Profile) Allows(method, path string) bool {
 		}
 	}
 	return false
+}
+
+// FilesSlack is the Files provider for Slack: files.info, then the download
+// from files.slack.com.
+const FilesSlack = "slack"
+
+// FilesPath is the path a Files profile answers itself. Nothing is proxied
+// there: the upstream has no such path, and the allowlist still has to name it.
+const FilesPath = "/files/download"
+
+// ServesFiles reports whether a call is the file route rather than one to pass
+// on. Compared on the path as CleanPath leaves it, the string the allowlist
+// matched.
+func (p *Profile) ServesFiles(method, path string) bool {
+	if p.Files == "" || !strings.EqualFold(method, http.MethodGet) {
+		return false
+	}
+	clean, ok := upstream.CleanPath(path)
+	return ok && clean == FilesPath
 }
 
 // AllowsMethod reports whether the method is in the profile's allowlist.

@@ -3,6 +3,7 @@ package upstream
 import (
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -52,4 +53,50 @@ func buildURL(baseURL, rawPath string) (string, error) {
 		return "", fmt.Errorf("upstream: path %q escapes the target host", rawPath)
 	}
 	return out, nil
+}
+
+// downloadURL checks an absolute URL an answer named before anything is sent to
+// it: the target's own scheme and host, or https on one of hosts exactly. No
+// user info — "files.example.com@evil.example" is a host named evil.example —
+// and no port on a listed host, which would be another server.
+//
+// The path is checked by its segments rather than by CleanPath: it ends in the
+// file's name, and "report..csv" is a name, where ".." alone is a step up.
+func downloadURL(baseURL, rawURL string, hosts []string) (string, error) {
+	base, err := url.Parse(baseURL)
+	if err != nil || base.Host == "" {
+		return "", fmt.Errorf("upstream: base url %q is not usable", baseURL)
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("upstream: download url: %w", err)
+	}
+	switch {
+	case u.User != nil:
+		return "", fmt.Errorf("upstream: download url %q carries user info", rawURL)
+	case u.Host == base.Host && u.Scheme == base.Scheme:
+	case u.Scheme == "https" && u.Port() == "" && slices.Contains(hosts, u.Hostname()):
+	default:
+		return "", fmt.Errorf("upstream: download url %q is not on the target's host or an allowed one", rawURL)
+	}
+	if !filePath(u.Path) {
+		return "", fmt.Errorf("upstream: download url %q has a bad path", rawURL)
+	}
+	u.Fragment, u.RawFragment = "", ""
+	return u.String(), nil
+}
+
+// filePath accepts a decoded path of a file URL: absolute, every segment a
+// name — not empty, not "." or ".." — and no control character or backslash
+// anywhere.
+func filePath(p string) bool {
+	if !strings.HasPrefix(p, "/") || strings.ContainsFunc(p, func(r rune) bool { return r < 0x20 || r == 0x7f || r == '\\' }) {
+		return false
+	}
+	for seg := range strings.SplitSeq(p[1:], "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
 }

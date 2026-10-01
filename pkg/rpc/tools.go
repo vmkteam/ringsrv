@@ -18,6 +18,7 @@ import (
 	"github.com/vmkteam/ringsrv/pkg/ring"
 	"github.com/vmkteam/ringsrv/pkg/ring/code"
 	"github.com/vmkteam/ringsrv/pkg/ring/dbq"
+	"github.com/vmkteam/ringsrv/pkg/ring/files"
 	"github.com/vmkteam/ringsrv/pkg/ring/proxy"
 	"github.com/vmkteam/ringsrv/pkg/ring/target"
 
@@ -66,6 +67,11 @@ const (
 	// ErrCodeTruncated marks an answer the batch budget could not carry: narrow
 	// the jq, raise max_bytes or ask for that one on its own.
 	ErrCodeTruncated = "Truncated"
+	// The file route's refusals: a file outside public channels, one over the
+	// download limit, one of a kind that cannot be shown.
+	ErrCodeFileNotPublic       = files.CodeNotPublic
+	ErrCodeFileTooLarge        = files.CodeTooLarge
+	ErrCodeUnsupportedFileType = files.CodeUnsupported
 )
 
 // ErrNoRole is returned when the caller's groups match no role. It must not
@@ -345,12 +351,16 @@ func (s ToolsService) callAPI(ctx context.Context, arguments map[string]any) mcp
 	}
 
 	items := s.runAPIBatch(ctx, acc, args, rec)
+	blocks := attachImages(items)
 	out := APICallBatch{Env: s.env, TraceID: rec.TraceID, Results: items, Budget: budgetOf(ctx)}
 	for i := range items {
 		out.Truncated = out.Truncated || items[i].Truncated
 	}
 	rec.Decision, rec.DenyReason = audit.DecisionAllow, ""
 	res := okResultJSON(out, s.env)
+	if !res.IsError {
+		res.Content = append(res.Content, blocks...)
+	}
 	rec.BytesOut = res.Size()
 	return res
 }
@@ -506,14 +516,16 @@ func (s ToolsService) fitAPIBatch(items []APICallItem, budget int) {
 		if sizes[i] < 0 || fits[i] {
 			continue
 		}
-		size := sizes[i]
-		items[i].Data, items[i].Truncated = nil, true
-		items[i].Error = &ToolError{
-			Code: ErrCodeTruncated,
-			Message: fmt.Sprintf("dropped: %d bytes would not fit the batch budget of %d left for the other answers; "+
-				"narrow this call's jq, raise max_bytes or ask for it on its own", size, budget),
-		}
+		truncateItem(&items[i], fmt.Sprintf("dropped: %d bytes would not fit the batch budget of %d left for the other answers; "+
+			"narrow this call's jq, raise max_bytes or ask for it on its own", sizes[i], budget))
 	}
+}
+
+// truncateItem drops an item's answer for want of room and says why: the item
+// stays in the list, so the model sees what to ask for again.
+func truncateItem(item *APICallItem, message string) {
+	item.Data, item.Truncated = nil, true
+	item.Error = &ToolError{Code: ErrCodeTruncated, Message: message}
 }
 
 // itemSize is what one answer will cost the budget, -1 for an item with no
@@ -574,20 +586,31 @@ func (s ToolsService) oneAPICall(ctx context.Context, acc target.Access, call AP
 		return item
 	}
 
-	observe(ToolAPICall, call.Target, outcomeOK)
-	observeRedactions(call.Target, answer.Redacted)
+	applyAnswer(&item, answer, call.Target, rec)
+	return item
+}
+
+// applyAnswer records a call that produced an answer and puts the answer on its
+// item.
+func applyAnswer(item *APICallItem, answer *proxy.Answer, target string, rec *auditRecord) {
+	observe(ToolAPICall, target, outcomeOK)
+	observeRedactions(target, answer.Redacted)
 	// Which rules fired, not what they fired on.
 	rec.Masked = answer.Redacted.Names()
 	rec.UpstreamStatus = answer.Status
 	rec.Decision, rec.DenyReason, rec.BytesOut = audit.DecisionAllow, "", answer.BytesTotal
 	rec.Truncated = answer.Truncated
+	rec.File, rec.Image = answer.File, answer.Image != nil
+	if answer.Image != nil {
+		rec.BytesOut += len(answer.Image.Data)
+	}
 
 	item.Status, item.Truncated, item.BytesTotal = answer.Status, answer.Truncated, answer.BytesTotal
 	item.DefaultJQ, item.Data, item.Redacted = answer.DefaultJQ, answer.Data, answer.Redacted.Names()
+	item.img = answer.Image
 	if answer.AsText {
 		item.Data = answer.Text
 	}
-	return item
 }
 
 // prepareCall runs everything that has to be true before a call may be made: the
@@ -826,6 +849,10 @@ func (s ToolsService) upstreamError(ctx context.Context, e *proxy.Error, call AP
 		out.Code, rec.DenyReason = ErrCodeJQFailed, ErrCodeJQFailed
 		out.Keys = e.Keys
 		observe(ToolAPICall, call.Target, outcomeBadArgs)
+	case proxy.FailRefused:
+		out.Code, rec.DenyReason = e.Code, e.Code
+		out.Status = 0
+		observe(ToolAPICall, call.Target, outcomeOf(e.Code))
 	default:
 		out.Code, rec.DenyReason = ErrCodeUpstream, ErrCodeUpstream
 		observe(ToolAPICall, call.Target, outcomeError)

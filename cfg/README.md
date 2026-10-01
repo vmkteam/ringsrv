@@ -168,6 +168,7 @@ Write              = true                         # only roles with AllowWrite s
 | `AllowHeaders` | — | the header names a **call** may set itself; empty means none. A name on this list must not be sent by the profile itself, and the forbidden families are never accepted |
 | `Write` | — | the profile changes state; roles without `AllowWrite` do not see it. Mutually exclusive with `ReadOnlyPost` |
 | `ReadOnlyPost` | — | the API reads through POST; on such a profile an unprefixed pattern is GET only, and the POST paths are named explicitly. Nothing beyond GET and POST |
+| `Files` | — | `slack`: the server answers `GET /files/download?file=F…` itself — `files.info` with the profile's token, a refusal unless the file is shared in a public channel, at most 10 MB, then the bytes from `files.slack.com` only, carrying the `Authorization` header alone. Text comes back as numbered lines (`offset`, `limit`, `grep`), a png/jpeg/gif/webp picture as an image content block; `DefaultJQ` does not run over it. Requires `^/files/download$` in `AllowPaths`, `file` in `AllowQueryParams` when the list is set, and an `Authorization` header. Do not allow `/api/files.info` itself: with `files:read` it describes files from private channels and direct messages too |
 
 **How to write `AllowPaths`.** The path is matched without the query, so
 `^/api/v1/query$` also permits `/api/v1/query?query=up`. End a pattern with `$`
