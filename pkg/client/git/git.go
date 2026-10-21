@@ -19,6 +19,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/vmkteam/ringsrv/pkg/client/proc"
 )
 
 // allowedSubcommands is the whole surface of git this service uses. Anything
@@ -50,6 +52,10 @@ var (
 	// ErrBadRef and ErrBadPath are refusals to build a command at all.
 	ErrBadRef  = errors.New("git: bad ref")
 	ErrBadPath = errors.New("git: bad path")
+	// ErrCloning means the caller stopped waiting while the first clone goes
+	// on: for a large repository it outlives a cron tick and a question, and a
+	// bare "deadline exceeded" read as a failed mirror.
+	ErrCloning = errors.New("git: first clone still in progress")
 )
 
 // shaRe is what a ref may look like when it is not a known branch name.
@@ -106,15 +112,24 @@ func (s *Store) run(ctx context.Context, dir string, args ...string) ([]byte, er
 // runEnv is run with extra environment variables — the way a clone token
 // reaches git without touching argv or the clone's config (see authEnv).
 func (s *Store) runEnv(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
+	return s.runEnvTimeout(ctx, s.timeout(), dir, env, args...)
+}
+
+// runEnvTimeout is runEnv with its own deadline, for the one command that
+// honestly takes longer than DefaultTimeout: the first clone.
+func (s *Store) runEnvTimeout(ctx context.Context, timeout time.Duration, dir string, env []string, args ...string) ([]byte, error) {
 	if len(args) == 0 || !allowedSubcommands[args[0]] {
 		return nil, fmt.Errorf("git: subcommand %q is not allowed", first(args))
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, s.timeout())
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, s.opts.Git, args...) //nolint:gosec // argv is built here, never from a caller
 	cmd.Dir = dir
+	// clone and fetch are a tree of processes — remote-https runs index-pack —
+	// and a helper left alive goes on writing a pack nobody will use.
+	proc.KillGroupOnCancel(cmd)
 	cmd.Env = append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_CONFIG_NOSYSTEM=1",
@@ -127,7 +142,7 @@ func (s *Store) runEnv(ctx context.Context, dir string, env []string, args ...st
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("git: git %s timed out after %s", args[0], s.timeout())
+			return nil, fmt.Errorf("git: git %s timed out after %s", args[0], timeout)
 		}
 		return nil, fmt.Errorf("git: git %s: %w: %s", args[0], err, clip(stderr.String()))
 	}
@@ -139,6 +154,13 @@ func (s *Store) timeout() time.Duration {
 		return s.opts.Timeout
 	}
 	return DefaultTimeout
+}
+
+func (s *Store) cloneTimeout() time.Duration {
+	if s.opts.CloneTimeout > 0 {
+		return s.opts.CloneTimeout
+	}
+	return DefaultCloneTimeout
 }
 
 func first(args []string) string {

@@ -275,6 +275,9 @@ func (a *App) initRepos(ctx context.Context) error {
 		ReposDir:     a.cfg.Storage.ReposDir,
 		WorktreesDir: a.cfg.Storage.WorktreesDir,
 		MaxDiskBytes: a.cfg.Storage.MaxDiskBytes,
+		OnRemove: func(what, path string, size int64) {
+			a.Print(ctx, "storage removed", "what", what, "path", path, "bytes", size)
+		},
 	})
 	if a.cfg.Storage.ReposDir == "" {
 		a.Print(ctx, "code tools disabled: Storage.ReposDir is empty")

@@ -18,6 +18,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/vmkteam/ringsrv/pkg/client/proc"
 )
 
 // Errors the domain distinguishes.
@@ -92,7 +94,9 @@ func (c *Client) Version(ctx context.Context) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.opts.Timeout)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, c.opts.Bin, "--version").CombinedOutput() //nolint:gosec // fixed argv
+	cmd := exec.CommandContext(ctx, c.opts.Bin, "--version") //nolint:gosec // fixed argv
+	proc.KillGroupOnCancel(cmd)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("codegraph: %s --version: %w: %s", c.opts.Bin, err, bytes.TrimSpace(out))
 	}
@@ -163,6 +167,7 @@ func (c *Client) call(ctx context.Context, dir, tool string, args map[string]any
 func (c *Client) exec(ctx context.Context, dir, tool string, req []byte, dst any) error {
 	cmd := exec.CommandContext(ctx, c.opts.Bin, "serve") //nolint:gosec // fixed argv; arguments travel as JSON on stdin
 	cmd.Dir = dir
+	proc.KillGroupOnCancel(cmd)
 	cmd.Stdin = bytes.NewReader(req)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr

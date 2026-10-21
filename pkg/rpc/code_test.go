@@ -1,7 +1,9 @@
 package rpc
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -443,4 +445,17 @@ func TestCodeRead_RepeatedWindow(t *testing.T) {
 	require.NotNil(t, out.Windows[2].DedupOf)
 	assert.Equal(t, 0, *out.Windows[2].DedupOf, "and says where the lines are")
 	assert.Equal(t, "internal/rpc/order.go", out.Windows[2].Path)
+}
+
+// A first clone that outlives the call is not an upstream failure: the caller
+// is told to come back, under the code it already retries on.
+func TestCodeError_CloneInProgress(t *testing.T) {
+	t.Parallel()
+	err := fmt.Errorf("%w: %w", git.ErrCloning, context.DeadlineExceeded)
+
+	e := ToolsService{}.codeError(err, "apisrv", "code_read")
+
+	assert.Equal(t, ErrCodeTimeout, e.Code)
+	assert.Contains(t, e.Message, "apisrv")
+	assert.Contains(t, e.Message, "repeat the call")
 }

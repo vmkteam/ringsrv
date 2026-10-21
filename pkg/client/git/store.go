@@ -3,7 +3,9 @@ package git
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -18,6 +20,22 @@ import (
 // DefaultTimeout caps a single git invocation. It is for the case where
 // something hangs on the network, not for the honest slow path.
 const DefaultTimeout = 5 * time.Minute
+
+// DefaultCloneTimeout caps the first clone, which is the honest slow path: the
+// whole history comes as one pack, and a 1.3 GB repository would need 4.4 MB/s
+// sustained to arrive within DefaultTimeout.
+const DefaultCloneTimeout = 30 * time.Minute
+
+// cloneTmpPrefix names the directory a clone is made in before it is renamed
+// into place. A catalogue name cannot start with a dot, so no mirror is ever
+// mistaken for one.
+const cloneTmpPrefix = ".clone-"
+
+// maxConcurrentClones bounds the clones running at once. A caller that gives
+// up does not stop its clone — once() lets the work outlive it — so the cron's
+// own limit bounds waiting, not cloning: on an empty volume every mirror would
+// start cloning within one tick, all of them in the service's memory.
+const maxConcurrentClones = 2
 
 // Spec is what the catalogue knows about a repository, reduced to what this
 // package needs. The conversion lives in Repo.Spec, so this package stays
@@ -43,6 +61,13 @@ type Options struct {
 	// Git is the binary to run; empty means "git" from PATH.
 	Git     string
 	Timeout time.Duration
+	// CloneTimeout caps the first clone; empty means DefaultCloneTimeout.
+	CloneTimeout time.Duration
+	// OnRemove, when set, hears of everything the store removes on its own
+	// apart from worktree eviction: a broken mirror, an abandoned clone or
+	// pack. The app logs it — a disk that frees gigabytes by itself has to say
+	// what went.
+	OnRemove func(what, path string, size int64)
 }
 
 // Store owns the clones and the worktrees.
@@ -52,6 +77,8 @@ type Store struct {
 	// single-flight over (repo, sha) for checkouts and over the name for
 	// fetches: two questions about one commit must produce one checkout.
 	group singleflight.Group
+	// cloneSlots is the semaphore behind maxConcurrentClones.
+	cloneSlots chan struct{}
 
 	mu sync.Mutex
 	// inUse counts worktrees currently being read, so the LRU never deletes the
@@ -80,11 +107,12 @@ func New(opts Options) *Store {
 	opts.ReposDir = absPath(opts.ReposDir)
 	opts.WorktreesDir = absPath(opts.WorktreesDir)
 	return &Store{
-		opts:      opts,
-		inUse:     map[string]int{},
-		lastUsed:  map[string]time.Time{},
-		lastFetch: map[string]time.Time{},
-		now:       time.Now,
+		opts:       opts,
+		cloneSlots: make(chan struct{}, maxConcurrentClones),
+		inUse:      map[string]int{},
+		lastUsed:   map[string]time.Time{},
+		lastFetch:  map[string]time.Time{},
+		now:        time.Now,
 	}
 }
 
@@ -104,7 +132,7 @@ func (s *Store) WorktreePath(name, sha string) string {
 // first call and fetches afterwards.
 func (s *Store) Ensure(ctx context.Context, spec Spec) error {
 	if s.Have(spec.Name) {
-		if err := s.scrubCredentials(spec.Name); err != nil {
+		if err := repairConfig(s.ClonePath(spec.Name), spec); err != nil {
 			return err
 		}
 		return s.Fetch(ctx, spec)
@@ -118,6 +146,10 @@ func (s *Store) Ensure(ctx context.Context, spec Spec) error {
 		}
 		return "", s.clone(ctx, spec)
 	})
+	if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+		// The caller left, the clone did not: once() runs it to the end.
+		return fmt.Errorf("%w: %w", ErrCloning, err)
+	}
 	return err
 }
 
@@ -137,10 +169,42 @@ func (s *Store) Have(name string) bool {
 	return err == nil
 }
 
+// clone makes the mirror aside and renames it into place once it can answer.
+// Cloning in place made a clone killed halfway — by the timeout, a restart or
+// the OOM killer — look like a mirror, or like junk git refuses to clone into:
+// on one instance that was 65 GB of packs under the mirror of a 0.85 GB
+// repository, and no working mirror.
 func (s *Store) clone(ctx context.Context, spec Spec) error {
+	select {
+	case s.cloneSlots <- struct{}{}:
+		defer func() { <-s.cloneSlots }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
 	if err := os.MkdirAll(s.opts.ReposDir, 0o750); err != nil {
 		return fmt.Errorf("git: create repos dir: %w", err)
 	}
+	// Ensure comes here only when the mirror has no HEAD, so whatever sits at
+	// its path is what an interrupted in-place clone of an earlier version left.
+	// Only a missing HEAD says so: a HEAD that cannot be read is no verdict on
+	// the mirror, and removing it would cost a full clone.
+	switch _, statErr := os.Stat(filepath.Join(s.ClonePath(spec.Name), "HEAD")); {
+	case os.IsNotExist(statErr):
+		if _, err := s.removeAll("broken mirror", s.ClonePath(spec.Name)); err != nil {
+			return err
+		}
+	case statErr != nil:
+		return fmt.Errorf("git: check clone: %w", statErr)
+	}
+
+	tmp, err := os.MkdirTemp(s.opts.ReposDir, cloneTmpPrefix+spec.Name+"-*")
+	if err != nil {
+		return fmt.Errorf("git: create clone dir: %w", err)
+	}
+	// A failed clone leaves nothing; one killed with the process is Prune's.
+	// After the rename there is nothing at tmp, and this is a no-op.
+	defer func() { _ = os.RemoveAll(tmp) }()
 
 	args := []string{"clone", "--bare"}
 	if !spec.Tags {
@@ -148,20 +212,27 @@ func (s *Store) clone(ctx context.Context, spec Spec) error {
 	}
 	// Neither --depth nor --filter=blob:none: the first throws away the history
 	// this whole thing exists for, the second fetches blobs on every grep.
-	args = append(args, spec.CloneURL, s.ClonePath(spec.Name))
+	args = append(args, spec.CloneURL, tmp)
 
-	if _, err := s.runEnv(ctx, s.opts.ReposDir, authEnv(spec), args...); err != nil {
+	if _, err := s.runEnvTimeout(ctx, s.cloneTimeout(), s.opts.ReposDir, authEnv(spec), args...); err != nil {
 		return err
 	}
 	// A bare clone follows only the default branch; we want every head, because
 	// a hotfix deployed from a branch has to stay reachable.
-	if err := s.setFetchRefspec(spec); err != nil {
+	if err := repairConfig(tmp, spec); err != nil {
 		return err
 	}
 	// The clone wrote refs/heads/* once and will never update them — the refspec
 	// points fetches at refs/remotes/origin/*. One fetch right away creates
 	// those, so a branch name resolves to something that moves.
-	return s.Fetch(ctx, spec)
+	if err := s.fetchIn(ctx, tmp, spec); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, s.ClonePath(spec.Name)); err != nil {
+		return fmt.Errorf("git: move clone into place: %w", err)
+	}
+	s.markFetched(spec.Name)
+	return nil
 }
 
 // authEnv hands git the clone token through its config environment rather than
@@ -183,19 +254,42 @@ func authEnv(spec Spec) []string {
 // earlier version of this package left behind.
 var credentialURLRe = regexp.MustCompile(`(?m)^(\s*url = https?://)[^@\s/]+@`)
 
-// scrubCredentials removes a token a previous version put into the clone's
-// config. Idempotent and cheap, so it runs on every Ensure of an existing clone.
-func (s *Store) scrubCredentials(name string) error {
-	cfg := filepath.Join(s.ClonePath(name), "config")
+// repairConfig brings the config of the clone at dir to what this version
+// expects. Idempotent and cheap, so Ensure runs it on every fetch of an
+// existing clone, which is how clones made by earlier versions get fixed:
+//   - a token in the remote URL, put there by an old clone command, which
+//     would stay on the volume after rotation;
+//   - no fetch refspec, left by an in-place clone killed after HEAD: fetches
+//     then never create refs/remotes/origin/* and branch names stop resolving.
+//
+// It writes the file directly: shelling out to `git config` would mean
+// allowing a subcommand that takes arbitrary keys and values.
+func repairConfig(dir string, spec Spec) error {
+	cfg := filepath.Join(dir, "config")
 	b, err := os.ReadFile(cfg)
 	if err != nil {
 		return fmt.Errorf("git: read clone config: %w", err)
 	}
-	if !credentialURLRe.Match(b) {
+	out := credentialURLRe.ReplaceAllString(string(b), "$1")
+	out = strings.Replace(out,
+		"fetch = +refs/heads/*:refs/heads/*",
+		"fetch = "+refspec(spec), 1)
+	if !strings.Contains(out, "fetch = ") {
+		out += "\n[remote \"origin\"]\n\tfetch = " + refspec(spec) + "\n"
+	}
+	if out == string(b) {
 		return nil
 	}
-	out := credentialURLRe.ReplaceAll(b, []byte("$1"))
-	return os.WriteFile(cfg, out, 0o600) //nolint:gosec // G703: the path is Storage.ReposDir plus a catalogue name the validator restricts
+	// Through a rename: a config cut short by a crash would break the mirror
+	// for good, since a mirror with HEAD is never cloned again.
+	tmp := cfg + ".tmp"
+	if err := os.WriteFile(tmp, []byte(out), 0o600); err != nil { //nolint:gosec // G703: the path is Storage.ReposDir plus a catalogue name the validator restricts
+		return fmt.Errorf("git: write clone config: %w", err)
+	}
+	if err := os.Rename(tmp, cfg); err != nil {
+		return fmt.Errorf("git: write clone config: %w", err)
+	}
+	return nil
 }
 
 // absPath keeps a relative directory from being resolved against git's working
@@ -211,41 +305,33 @@ func absPath(p string) string {
 	return abs
 }
 
-// setFetchRefspec writes the refspec into the clone's config file directly.
-// Shelling out to `git config` would mean allowing a subcommand that takes
-// arbitrary keys and values, and this is the only setting we ever change.
-func (s *Store) setFetchRefspec(spec Spec) error {
-	cfg := filepath.Join(s.ClonePath(spec.Name), "config")
-	b, err := os.ReadFile(cfg)
-	if err != nil {
-		return fmt.Errorf("git: read clone config: %w", err)
-	}
-	out := strings.Replace(string(b),
-		"fetch = +refs/heads/*:refs/heads/*",
-		"fetch = "+refspec(spec), 1)
-	if !strings.Contains(out, "fetch = ") {
-		out += "\n[remote \"origin\"]\n\tfetch = " + refspec(spec) + "\n"
-	}
-	return os.WriteFile(cfg, []byte(out), 0o600) //nolint:gosec // G703: the path is Storage.ReposDir plus a catalogue name the validator restricts
-}
-
 // Fetch updates the clone. Callers that just missed an object should fetch once
 // and then fall back to the GitLab API rather than fetching in a loop.
 func (s *Store) Fetch(ctx context.Context, spec Spec) error {
 	// Two pushes in a row, or a push and the cron that covers for it, must not
 	// run two fetches: the second would wait on git's own lock anyway.
 	_, err := s.once(ctx, "fetch:"+spec.Name, func(ctx context.Context) (string, error) {
-		args := []string{"fetch", "--prune"}
-		if !spec.Tags {
-			args = append(args, "--no-tags")
-		}
-		args = append(args, "origin")
-		if _, err := s.runEnv(ctx, s.ClonePath(spec.Name), authEnv(spec), args...); err != nil {
+		// A pack this fetch leaves half-written is Prune's to remove, by age: an
+		// auto gc detached by an earlier fetch may be writing tmp_* packs of
+		// its own right now.
+		if err := s.fetchIn(ctx, s.ClonePath(spec.Name), spec); err != nil {
 			return "", err
 		}
 		s.markFetched(spec.Name)
 		return "", nil
 	})
+	return err
+}
+
+// fetchIn runs the fetch in the clone at dir: the mirror itself, or a clone
+// that is not in place yet.
+func (s *Store) fetchIn(ctx context.Context, dir string, spec Spec) error {
+	args := []string{"fetch", "--prune"}
+	if !spec.Tags {
+		args = append(args, "--no-tags")
+	}
+	args = append(args, "origin")
+	_, err := s.runEnv(ctx, dir, authEnv(spec), args...)
 	return err
 }
 
@@ -400,10 +486,136 @@ func refspec(spec Spec) string {
 	return "+refs/heads/*:refs/remotes/origin/*"
 }
 
-// Prune keeps the worktrees inside the disk budget, dropping the least recently
-// used first. Clones are never touched, and trees currently being read are
-// skipped — the reader would find the file gone halfway through.
+// Prune removes what interrupted clones and fetches left behind, then keeps
+// the worktrees inside the disk budget, dropping the least recently used
+// first. The mirrors themselves are never removed, and trees currently being
+// read are skipped — the reader would find the file gone halfway through.
 func (s *Store) Prune(ctx context.Context) (freed int64, err error) {
+	freed, err = s.removeLeftovers()
+	if err != nil {
+		return freed, err
+	}
+	evicted, err := s.evictWorktrees(ctx)
+	return freed + evicted, err
+}
+
+// removeLeftovers deletes what a clone or a fetch killed together with the
+// process leaves: a clone directory never renamed into place, and tmp_* packs
+// in a mirror. git removes those itself only in gc, after two weeks, and gc
+// does not run where nothing fetches. The budget does not apply: this is not a
+// cache.
+func (s *Store) removeLeftovers() (int64, error) {
+	entries, err := os.ReadDir(s.opts.ReposDir)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("git: read repos dir: %w", err)
+	}
+
+	cutoff := s.abandonedBefore()
+	var freed int64
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		path := filepath.Join(s.opts.ReposDir, e.Name())
+		var n int64
+		switch {
+		case strings.HasPrefix(e.Name(), cloneTmpPrefix):
+			n, err = s.removeIfOlder(path, e, cutoff)
+		case strings.HasSuffix(e.Name(), ".git"):
+			n, err = s.removeTmpPacks(filepath.Join(path, "objects", "pack"), cutoff)
+		}
+		freed += n
+		if err != nil {
+			return freed, err
+		}
+	}
+	return freed, nil
+}
+
+// abandonedBefore is the age past which a temporary clone or pack counts as
+// abandoned: untouched for longer than a clone and its first fetch may run,
+// so nothing in progress is removed under its feet.
+func (s *Store) abandonedBefore() time.Time {
+	return s.now().Add(-(s.cloneTimeout() + s.timeout() + time.Minute))
+}
+
+// removeIfOlder removes the directory e at path if it was last modified before
+// cutoff, and reports how much it held.
+func (s *Store) removeIfOlder(path string, e os.DirEntry, cutoff time.Time) (int64, error) {
+	info, err := e.Info()
+	if os.IsNotExist(err) {
+		return 0, nil // gone since ReadDir
+	}
+	if err != nil {
+		return 0, fmt.Errorf("git: stat %s: %w", path, err)
+	}
+	if !info.ModTime().Before(cutoff) {
+		return 0, nil
+	}
+	return s.removeAll("abandoned clone", path)
+}
+
+// removeAll removes the directory at path and reports it with its size. A
+// path that is not there is not reported: that is the usual case for a mirror
+// about to be cloned.
+func (s *Store) removeAll(what, path string) (int64, error) {
+	size, err := dirSize(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if err := os.RemoveAll(path); err != nil {
+		return 0, fmt.Errorf("git: remove %s %s: %w", what, path, err)
+	}
+	s.removed(what, path, size)
+	return size, nil
+}
+
+func (s *Store) removed(what, path string, size int64) {
+	if s.opts.OnRemove != nil {
+		s.opts.OnRemove(what, path, size)
+	}
+}
+
+// removeTmpPacks removes the tmp_* files index-pack writes into objects/pack
+// while a pack arrives and renames once it is complete: one older than cutoff
+// belongs to a fetch that is gone.
+func (s *Store) removeTmpPacks(dir string, cutoff time.Time) (int64, error) {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("git: read %s: %w", dir, err)
+	}
+
+	var freed int64
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), "tmp_") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || !info.ModTime().Before(cutoff) {
+			// Gone since ReadDir means index-pack finished and renamed it.
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return freed, fmt.Errorf("git: remove abandoned pack %s: %w", e.Name(), err)
+		}
+		s.removed("abandoned pack", path, info.Size())
+		freed += info.Size()
+	}
+	return freed, nil
+}
+
+// evictWorktrees is the budget half of Prune.
+func (s *Store) evictWorktrees(ctx context.Context) (freed int64, err error) {
 	if s.opts.MaxDiskBytes <= 0 {
 		return 0, nil
 	}
