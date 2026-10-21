@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vmkteam/ringsrv/pkg/ring/code/gittest"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -596,4 +598,154 @@ func (s *Store) busy2(key string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.inUse[key]
+}
+
+// A clone killed mid-transfer by an earlier version, which cloned in place,
+// left packs and no HEAD at the mirror's path. git refuses to clone into a
+// directory that is not empty, so the mirror stayed broken — for days on one
+// instance, with 65 GB under it. Ensure clears it and clones.
+func TestEnsure_ReplacesWhatAKilledCloneLeft(t *testing.T) {
+	t.Parallel()
+	origin, _, second := originRepo(t)
+	s := newStore(t)
+	gittest.Write(t, s.ClonePath("apisrv"), "objects/pack/tmp_pack_x", "half a pack")
+	require.False(t, s.Have("apisrv"))
+	removed := recordRemovals(s)
+
+	require.NoError(t, s.Ensure(t.Context(), Spec{Name: "apisrv", CloneURL: origin, DefaultBranch: "master"}))
+
+	assert.NoFileExists(t, filepath.Join(s.ClonePath("apisrv"), "objects", "pack", "tmp_pack_x"))
+	assert.Equal(t, []removal{{"broken mirror", s.ClonePath("apisrv"), int64(len("half a pack"))}}, *removed,
+		"a disk that frees space by itself says what went")
+	sha, err := s.ResolveSHA(t.Context(), "apisrv", "master")
+	require.NoError(t, err)
+	assert.Equal(t, second, sha)
+}
+
+// A clone that fails leaves nothing behind: neither a mirror that looks
+// present nor the directory it was being made in.
+func TestEnsure_FailedCloneLeavesNothing(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+
+	err := s.Ensure(t.Context(), Spec{Name: "apisrv", CloneURL: filepath.Join(t.TempDir(), "missing"), DefaultBranch: "master"})
+	require.Error(t, err)
+
+	assert.False(t, s.Have("apisrv"))
+	entries, err := os.ReadDir(s.opts.ReposDir)
+	require.NoError(t, err)
+	assert.Empty(t, entries)
+}
+
+// A clone killed after HEAD but before the refspec has no fetch line in its
+// config. Fetches then write FETCH_HEAD only, refs/remotes/origin/* never
+// move, and a branch name resolves to the clone-day snapshot forever. Ensure
+// writes the refspec back.
+func TestEnsure_RestoresMissingRefspec(t *testing.T) {
+	t.Parallel()
+	origin, _, _ := originRepo(t)
+	s := newStore(t)
+	spec := Spec{Name: "apisrv", CloneURL: origin, DefaultBranch: "master"}
+	require.NoError(t, s.Ensure(t.Context(), spec))
+	gitT(t, s.ClonePath("apisrv"), "config", "--unset-all", "remote.origin.fetch")
+
+	gitT(t, origin, "commit", "--allow-empty", "-m", "ABC-3 after the clone")
+	third := gitT(t, origin, "rev-parse", "HEAD")
+
+	require.NoError(t, s.Ensure(t.Context(), spec))
+	sha, err := s.ResolveSHA(t.Context(), "apisrv", "master")
+	require.NoError(t, err)
+	assert.Equal(t, third, sha, "master follows the remote again")
+}
+
+// A caller that gives up does not stop its clone, so the cron's limit bounds
+// waiting, not cloning: on an empty volume every mirror would start cloning
+// within one tick, all in the service's memory. Clones queue for a slot.
+func TestEnsure_ClonesWaitForASlot(t *testing.T) {
+	t.Parallel()
+	origin, _, _ := originRepo(t)
+	s := newStore(t)
+	for range cap(s.cloneSlots) {
+		s.cloneSlots <- struct{}{} // every slot is taken
+	}
+	spec := Spec{Name: "apisrv", CloneURL: origin, DefaultBranch: "master"}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	err := s.Ensure(ctx, spec)
+	require.ErrorIs(t, err, ErrCloning, "the caller left, the clone did not")
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.False(t, s.Have("apisrv"), "no clone runs without a slot")
+	entries, err := os.ReadDir(s.opts.ReposDir)
+	if !os.IsNotExist(err) {
+		require.NoError(t, err)
+		assert.Empty(t, entries, "not even its directory")
+	}
+
+	<-s.cloneSlots // a slot frees up, and the clone that waited for it runs
+	require.NoError(t, s.Ensure(t.Context(), spec))
+	assert.True(t, s.Have("apisrv"))
+}
+
+// A clone or a fetch killed together with the process — a restart, the OOM
+// killer — leaves its clone directory or tmp_* pack behind, and git removes
+// those only in gc, after two weeks. Prune does, budget or not, once they are
+// older than anything still running could be.
+func TestPrune_RemovesAbandonedLeftovers(t *testing.T) {
+	t.Parallel()
+	origin, _, _ := originRepo(t)
+	s := newStore(t) // MaxDiskBytes 0: no budget, leftovers go anyway
+	require.NoError(t, s.Ensure(t.Context(), Spec{Name: "apisrv", CloneURL: origin, DefaultBranch: "master"}))
+
+	abandoned := s.abandonedBefore().Add(-time.Minute)
+	plant := func(dir, name string, at time.Time) {
+		gittest.Write(t, dir, name, "part of a pack")
+		require.NoError(t, os.Chtimes(filepath.Join(dir, name), at, at))
+	}
+	oldClone := filepath.Join(s.opts.ReposDir, cloneTmpPrefix+"apisrv-1")
+	plant(oldClone, "objects/pack/tmp_pack_a", abandoned)
+	require.NoError(t, os.Chtimes(oldClone, abandoned, abandoned))
+	runningClone := filepath.Join(s.opts.ReposDir, cloneTmpPrefix+"apisrv-2")
+	plant(runningClone, "HEAD", time.Now())
+
+	packs := filepath.Join(s.ClonePath("apisrv"), "objects", "pack")
+	plant(packs, "tmp_pack_old", abandoned)
+	plant(packs, "tmp_pack_running", time.Now())
+	removed := recordRemovals(s)
+
+	freed, err := s.Prune(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, int64(2*len("part of a pack")), freed)
+
+	assert.NoDirExists(t, oldClone)
+	assert.NoFileExists(t, filepath.Join(packs, "tmp_pack_old"))
+	assert.DirExists(t, runningClone, "a clone in progress is left alone")
+	assert.FileExists(t, filepath.Join(packs, "tmp_pack_running"), "a fetch in progress is left alone")
+	assert.ElementsMatch(t, []removal{
+		{"abandoned clone", oldClone, int64(len("part of a pack"))},
+		{"abandoned pack", filepath.Join(packs, "tmp_pack_old"), int64(len("part of a pack"))},
+	}, *removed)
+
+	_, err = s.ResolveSHA(t.Context(), "apisrv", "master")
+	require.NoError(t, err, "the mirror itself is untouched")
+}
+
+// removal is one OnRemove report.
+type removal struct {
+	what, path string
+	size       int64
+}
+
+// recordRemovals collects what the store reports removing. The reports come
+// from the goroutine doing the work, and the test reads them after that work
+// returned.
+func recordRemovals(s *Store) *[]removal {
+	var mu sync.Mutex
+	got := []removal{}
+	s.opts.OnRemove = func(what, path string, size int64) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, removal{what, path, size})
+	}
+	return &got
 }

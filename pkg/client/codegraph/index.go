@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/vmkteam/ringsrv/pkg/client/proc"
+
 	"golang.org/x/sync/singleflight"
 )
 
@@ -70,6 +72,7 @@ func (c *Client) Finalize(ctx context.Context, dir string) error {
 
 	cmd := exec.CommandContext(ctx, c.opts.Bin, "incremental-index") //nolint:gosec // fixed argv
 	cmd.Dir = dir
+	proc.KillGroupOnCancel(cmd)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 
@@ -88,6 +91,7 @@ func (c *Client) index(ctx context.Context, dir string) error {
 
 	cmd := exec.CommandContext(ctx, c.opts.Bin, "rebuild-index", "--confirm") //nolint:gosec // fixed argv
 	cmd.Dir = dir
+	proc.KillGroupOnCancel(cmd)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
 

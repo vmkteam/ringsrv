@@ -404,6 +404,9 @@ func (s ToolsService) codeError(err error, repo, what string) ToolError {
 	case errors.Is(err, git.ErrBadRef), errors.Is(err, codegraph.ErrBadSymbol):
 		e.Code = ErrCodeBadArgs
 		e.Message = err.Error()
+	case errors.Is(err, git.ErrCloning):
+		e.Code = ErrCodeTimeout
+		e.Message = fmt.Sprintf("%s: the mirror is being cloned for the first time, which takes minutes for a large repository; repeat the call in a minute", repo)
 	case errors.Is(err, git.ErrBadPath):
 		e.Code = ErrCodePathDenied
 		e.Message = fmt.Sprintf("%s: %s", what, err)

@@ -3,11 +3,13 @@ package app
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"io"
 	"net/http"
 	"sort"
 	"time"
 
+	"github.com/vmkteam/ringsrv/pkg/client/git"
 	"github.com/vmkteam/ringsrv/pkg/client/gitlab"
 
 	"github.com/labstack/echo/v4"
@@ -148,15 +150,23 @@ func (a *App) fetchMirror(ctx context.Context, name string) {
 	ctx, cancel := context.WithTimeout(ctx, webhookTimeout)
 	defer cancel()
 
-	if err := a.repos.Ensure(ctx, repo.Spec(name)); err != nil {
+	err := a.repos.Ensure(ctx, repo.Spec(name))
+	switch {
+	case errors.Is(err, git.ErrCloning):
+		// Not a failure: the first clone of a large repository outlives the
+		// window, and the next tick finds the mirror in place.
+		a.Print(ctx, "mirror still cloning", "repo", name)
+		return
+	case err != nil:
 		a.Error(ctx, "mirror fetch failed", "repo", name, "err", err.Error())
 		return
 	}
 	a.Print(ctx, "mirror fetched", "repo", name)
 }
 
-// pruneStorage evicts the worktrees nobody is reading once the disk budget is
-// exceeded. Their AST indexes live inside them, so both go together.
+// pruneStorage removes what interrupted clones and fetches left in the mirrors,
+// then evicts the worktrees nobody is reading once the disk budget is exceeded.
+// Their AST indexes live inside them, so both go together.
 func (a *App) pruneStorage(ctx context.Context) error {
 	freed, err := a.repos.Prune(ctx)
 	if err != nil {
