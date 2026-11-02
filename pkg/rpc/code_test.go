@@ -409,6 +409,24 @@ func TestCodeRead_Windows(t *testing.T) { //nolint:tparallel // subtests share t
 		assert.Equal(t, ErrCodeBadArgs, decodeErr(t, res).Code, "a malformed line suffix is refused, not read as a path")
 	})
 
+	// An inverted range is refused, and the answer names the window.
+	t.Run("a window that ends before it starts is BadArgs", func(t *testing.T) {
+		res, _ := s.Call(ctx, ToolCodeRead, map[string]any{
+			"repo": "apisrv", "ref": sha,
+			"windows": []any{"internal/rpc/order.go:7-9", "internal/rpc/order.go:9-7"},
+		})
+		e := decodeErr(t, res)
+		assert.Equal(t, ErrCodeBadArgs, e.Code)
+		assert.Contains(t, e.Message, `window "internal/rpc/order.go:9-7": line_to 7 is before line_from 9`)
+
+		res, _ = s.Call(ctx, ToolCodeRead, map[string]any{
+			"repo": "apisrv", "ref": sha, "path": "internal/rpc/order.go", "line_from": 9, "line_to": 7,
+		})
+		e = decodeErr(t, res)
+		assert.Equal(t, ErrCodeBadArgs, e.Code)
+		assert.Contains(t, e.Message, "line_to 7 is before line_from 9")
+	})
+
 	t.Run("path:line reads from that line on", func(t *testing.T) {
 		res, err := s.Call(ctx, ToolCodeRead, map[string]any{
 			"repo": "apisrv", "ref": sha, "windows": []any{"internal/rpc/order.go:7"}, "max_lines": 1,

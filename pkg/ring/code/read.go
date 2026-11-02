@@ -75,7 +75,8 @@ func sliceLines(lines []string, w Window) *File {
 	if to <= 0 || to > total {
 		to = total
 	}
-	if from > total {
+	// A window past the end of the file or ending before it starts is empty.
+	if from > total || to < from {
 		return &File{From: from, To: from, Total: total}
 	}
 
