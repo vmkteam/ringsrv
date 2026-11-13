@@ -72,6 +72,36 @@ func (f *Fetcher) Store(ctx context.Context, prof *target.Profile, route, rawPat
 	if err != nil {
 		return nil, err
 	}
+	// The HTTP layer refuses ".." anywhere in a path, a part of a name
+	// included: say so here rather than fail as a broken path there.
+	if prof.Store == target.StoreWebDAV && strings.Contains(p.Path, "..") {
+		return nil, refused(CodeUnsupported, "%s: a name with .. in it cannot be read over WebDAV by this server", p.Path)
+	}
+	// An SFTP session goes around the HTTP client, so it takes the client's
+	// slot and its timeout itself: one call, one slot, one deadline for the
+	// dial, the walk and the read together.
+	if prof.Store == target.StoreSFTP {
+		release, slotErr := f.client.Slot(ctx)
+		if slotErr != nil {
+			return nil, slotErr
+		}
+		defer release()
+		if timeout := f.client.Timeout(); timeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, timeout)
+			defer cancel()
+		}
+	}
+	res, err := f.store(ctx, prof, read, p, budget)
+	// A socket's own deadline may fire a moment before the context says it
+	// is done: either is the store not answering in time.
+	if err != nil && (errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded)) {
+		return nil, fmt.Errorf("%w: the %s store did not answer in time: %w", upstream.ErrTimeout, prof.Store, err)
+	}
+	return res, err
+}
+
+func (f *Fetcher) store(ctx context.Context, prof *target.Profile, read bool, p params, budget int) (*Result, error) {
 	st, err := f.openStore(ctx, prof)
 	if err != nil {
 		return nil, err
@@ -81,15 +111,16 @@ func (f *Fetcher) Store(ctx context.Context, prof *target.Profile, route, rawPat
 	if root == "" {
 		root = "/"
 	}
+	var last *storeEntry
 	if st.follows() {
-		if err := noLinks(ctx, st, root, p.Path); err != nil {
+		if last, err = noLinks(ctx, st, root, p.Path); err != nil {
 			return nil, err
 		}
 	}
 	if !read {
 		return f.listing(ctx, st, root, p, budget)
 	}
-	return f.readStore(ctx, st, root, prof.Redact, p, budget)
+	return f.readStore(ctx, st, root, prof.Redact, p, last, budget)
 }
 
 func (f *Fetcher) openStore(ctx context.Context, prof *target.Profile) (store, error) {
@@ -147,11 +178,17 @@ func (f *Fetcher) listing(ctx context.Context, st store, root string, p params, 
 }
 
 // readStore shows a file of the store: described first, refused before its
-// bytes are read when it is not something this route shows.
-func (f *Fetcher) readStore(ctx context.Context, st store, root, redactMode string, p params, budget int) (*Result, error) {
-	e, err := st.stat(ctx, path.Join(root, p.Path))
-	if err != nil {
-		return nil, err
+// bytes are read when it is not something this route shows. known is the
+// file as the walk for links already described it, if it did.
+func (f *Fetcher) readStore(ctx context.Context, st store, root, redactMode string, p params, known *storeEntry, budget int) (*Result, error) {
+	var e storeEntry
+	if known != nil {
+		e = *known
+	} else {
+		var err error
+		if e, err = st.stat(ctx, path.Join(root, p.Path)); err != nil {
+			return nil, err
+		}
 	}
 	switch {
 	case e.dir:
@@ -165,7 +202,7 @@ func (f *Fetcher) readStore(ctx context.Context, st store, root, redactMode stri
 		meta.Modified = e.modified.UTC().Format(time.RFC3339)
 	}
 	kind := classify(name, e.mimetype)
-	if err = admit(meta, kind, e.mimetype, redactMode); err != nil {
+	if err := admit(meta, kind, e.mimetype, redactMode); err != nil {
 		return nil, err
 	}
 	data, err := st.read(ctx, path.Join(root, p.Path))
@@ -178,8 +215,11 @@ func (f *Fetcher) readStore(ctx context.Context, st store, root, redactMode stri
 
 // noLinks walks the path down from Root and refuses it at the first symlink:
 // resolving one would be asking the server where it points, and it may point
-// out of Root. Root itself is the catalogue's word and is not checked.
-func noLinks(ctx context.Context, st store, root, rel string) error {
+// out of Root. Root itself is the catalogue's word and is not checked. The
+// last entry is returned for the caller not to ask about it again; nil for
+// Root.
+func noLinks(ctx context.Context, st store, root, rel string) (*storeEntry, error) {
+	var last *storeEntry
 	cur := root
 	for seg := range strings.SplitSeq(strings.Trim(rel, "/"), "/") {
 		if seg == "" {
@@ -188,41 +228,34 @@ func noLinks(ctx context.Context, st store, root, rel string) error {
 		cur = path.Join(cur, seg)
 		e, err := st.stat(ctx, cur)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if e.link {
-			return refused(CodeUnsupported, "%s goes through a symlink, and links are not followed", rel)
+			return nil, refused(CodeUnsupported, "%s goes through a symlink, and links are not followed", rel)
 		}
+		last = &e
 	}
-	return nil
+	return last, nil
 }
 
 // parseStoreParams reads the parameters of a store route: path instead of
 // file. A listing without path is of Root; a file has to be named.
 func parseStoreParams(rawPath string, read bool) (params, error) {
 	p := params{Limit: defaultLimit}
-	seen := map[string]bool{}
-	for _, pair := range target.QueryPairs(rawPath) {
-		if seen[pair.Key] {
-			return p, fmt.Errorf("%w: %q is given twice", ErrBadParams, pair.Key)
-		}
-		seen[pair.Key] = true
-		switch pair.Key {
+	err := eachParam(rawPath, func(key, value string) error {
+		switch key {
 		case paramPath:
-			clean, err := storePath(pair.Value)
-			if err != nil {
-				return p, err
-			}
+			clean, err := storePath(value)
 			p.Path = clean
+			return err
 		case paramFile:
-			return p, fmt.Errorf("%w: a store names files by path, not by id", ErrBadParams)
-		default:
-			if err := p.set(pair.Key, pair.Value, fileID{}); err != nil {
-				return p, err
-			}
+			return fmt.Errorf("%w: a store names files by path, not by id", ErrBadParams)
 		}
-	}
+		return p.set(key, value, fileID{})
+	})
 	switch {
+	case err != nil:
+		return p, err
 	case p.Path == "" && read:
 		return p, fmt.Errorf("%w: path is required — a file's path from /files/list", ErrBadParams)
 	case p.Path == "":

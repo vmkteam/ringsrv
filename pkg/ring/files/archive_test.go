@@ -109,6 +109,19 @@ func TestArchive_EntryRefused(t *testing.T) {
 	assert.Equal(t, CodeUnsupported, refusalCode(err))
 }
 
+// A UTF-8 name an archive does not mark as UTF-8 stays as it is: Go reports
+// it as NonUTF8 too, and reading it as CP866 would garble it.
+func TestArchive_UTF8NameWithoutFlag(t *testing.T) {
+	t.Parallel()
+	f := filestest.NewSlack(t)
+	f.Add("F0000000209", "mac.zip", "zip", "application/zip", "hosted",
+		filestest.Zip(t, filestest.Entry{Name: "отчёт.csv", Body: []byte("a\n"), NoUTF8Flag: true}), nil)
+	res, err := fetch(t, f, "/files/download?file=F0000000209", 32<<10)
+	require.NoError(t, err)
+	require.Len(t, res.Text.Lines, 1)
+	assert.True(t, strings.HasSuffix(res.Text.Lines[0], "\tотчёт.csv"), res.Text.Lines[0])
+}
+
 // A picture inside an archive is refused on a target that masks, as a picture
 // on its own is.
 func TestArchive_PictureOnMaskingTarget(t *testing.T) {

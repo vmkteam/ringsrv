@@ -41,7 +41,15 @@ func attachImages(items []APICallItem) []mcp.ContentBlock {
 		}
 	}
 	for i := range items {
-		if from := items[i].DedupOf; from != nil && items[i].Error == nil {
+		from := items[i].DedupOf
+		switch {
+		case from == nil || items[i].Error != nil:
+		case items[*from].Error != nil:
+			// The picture it repeats was dropped: so is the repeat, for the
+			// same reason, or it would read as a file served with nothing in it.
+			dup := *items[*from].Error
+			items[i].Error, items[i].Truncated = &dup, true
+		default:
 			items[i].Image = items[*from].Image
 		}
 	}

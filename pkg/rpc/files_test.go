@@ -192,6 +192,23 @@ func TestFiles_NotPublicAudited(t *testing.T) {
 	assert.Equal(t, false, byIndex[1]["image"])
 }
 
+// A repeat of a picture the ceiling dropped is dropped with it, not left as a
+// file served with nothing in it.
+func TestAttachImages_RepeatOfDropped(t *testing.T) {
+	t.Parallel()
+	item := func(i int) APICallItem {
+		return APICallItem{Index: i, Data: map[string]any{"id": i}, img: &files.Image{MimeType: "image/png", Data: make([]byte, 1200<<10)}}
+	}
+	from := 2
+	items := []APICallItem{item(0), item(1), item(2), {Index: 3, DedupOf: &from}}
+	attachImages(items)
+	require.NotNil(t, items[2].Error)
+	require.NotNil(t, items[3].Error, "the repeat says why it has nothing")
+	assert.Equal(t, ErrCodeTruncated, items[3].Error.Code)
+	assert.True(t, items[3].Truncated)
+	assert.NotSame(t, items[2].Error, items[3].Error)
+}
+
 // A workbook inside an archive comes as the lines of a sheet, its PII masked
 // like any text, and the audit names the file inside as well as the archive.
 func TestFiles_ArchiveEntryAudited(t *testing.T) {

@@ -59,24 +59,33 @@ var fileIDs = map[string]fileID{
 }
 
 // parseParams reads the route's parameters through the splitter the allowlist
-// used, so the route acts on what was checked. A parameter given twice is
-// refused rather than resolved: which one wins would be a guess.
+// used, so the route acts on what was checked.
 func parseParams(rawPath string, id fileID) (params, error) {
 	p := params{Limit: defaultLimit}
-	seen := map[string]bool{}
-	for _, pair := range target.QueryPairs(rawPath) {
-		if seen[pair.Key] {
-			return p, fmt.Errorf("%w: %q is given twice", ErrBadParams, pair.Key)
-		}
-		seen[pair.Key] = true
-		if err := p.set(pair.Key, pair.Value, id); err != nil {
-			return p, err
-		}
+	if err := eachParam(rawPath, func(key, value string) error { return p.set(key, value, id) }); err != nil {
+		return p, err
 	}
 	if p.File == "" {
 		return p, fmt.Errorf("%w: file is required — the id of a file, %s", ErrBadParams, id.hint)
 	}
 	return p, nil
+}
+
+// eachParam hands every key=value of the query to set, through the splitter
+// the allowlist used. A key given twice is refused rather than resolved:
+// which one wins would be a guess.
+func eachParam(rawPath string, set func(key, value string) error) error {
+	seen := map[string]bool{}
+	for _, pair := range target.QueryPairs(rawPath) {
+		if seen[pair.Key] {
+			return fmt.Errorf("%w: %q is given twice", ErrBadParams, pair.Key)
+		}
+		seen[pair.Key] = true
+		if err := set(pair.Key, pair.Value); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (p *params) set(key, value string, id fileID) error {

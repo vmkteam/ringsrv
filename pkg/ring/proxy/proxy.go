@@ -122,7 +122,7 @@ func (p *Manager) Do(ctx context.Context, prof *target.Profile, req Request) (*A
 	if prof.PublicOnly != "" {
 		c, err := p.public.Before(ctx, prof, req.Method, req.Path)
 		if err != nil {
-			return nil, publicError(err)
+			return nil, routeError(err)
 		}
 		check = c
 	}
@@ -174,30 +174,11 @@ func (p *Manager) Do(ctx context.Context, prof *target.Profile, req Request) (*A
 	if prof.PublicOnly != "" {
 		body, err := p.public.After(ctx, prof, check, resp.Body, resp.Truncated)
 		if err != nil {
-			return nil, publicError(err)
+			return nil, routeError(err)
 		}
 		resp.Body = body
 	}
 	return p.shape(ctx, prof, req, resp)
-}
-
-// publicError maps what the public-only check returned onto the kinds the
-// layer above knows, as fileError does for the file route.
-func publicError(err error) *Error {
-	var (
-		ref *public.RefusedError
-		up  *public.UpstreamError
-	)
-	switch {
-	case errors.As(err, &ref):
-		return &Error{Kind: FailRefused, Code: ref.Code, Err: err}
-	case errors.As(err, &up):
-		return &Error{Kind: FailUpstream, Err: err, Status: up.Status}
-	case errors.Is(err, upstream.ErrTimeout):
-		return &Error{Kind: FailTimeout, Err: err}
-	default:
-		return &Error{Kind: FailUpstream, Err: err}
-	}
 }
 
 // shape runs the filter, the redaction and the size limit over a successful

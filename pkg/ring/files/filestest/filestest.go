@@ -145,6 +145,9 @@ type Entry struct {
 	// CP866 writes the name the way the archiver built into Windows does:
 	// in CP866, without the flag that marks a name as UTF-8.
 	CP866 bool
+	// NoUTF8Flag writes a UTF-8 name without that flag, the way the archiver
+	// of macOS does.
+	NoUTF8Flag bool
 }
 
 // Zip is an archive of the entries, in their order; a name ending in / is a
@@ -161,6 +164,9 @@ func Zip(t testing.TB, entries ...Entry) []byte {
 				t.Fatal(err)
 			}
 			fh.Name, fh.NonUTF8 = name, true
+		}
+		if e.NoUTF8Flag {
+			fh.NonUTF8 = true
 		}
 		w, err := zw.CreateHeader(fh)
 		if err != nil {

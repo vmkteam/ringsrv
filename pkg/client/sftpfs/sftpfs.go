@@ -30,7 +30,8 @@ type Config struct {
 	Key      []byte
 	// HostKey is the server's public key as an authorized_keys line.
 	HostKey string
-	// Timeout bounds the dial and the handshake.
+	// Timeout bounds the dial and the handshake; required. What comes after
+	// is bounded by the context Dial was given.
 	Timeout time.Duration
 }
 
@@ -72,10 +73,14 @@ func Dial(ctx context.Context, cfg Config) (*Conn, error) {
 		return nil, fmt.Errorf("sftp: dial %s: %w", cfg.Addr, err)
 	}
 	// The handshake has no context of its own: a deadline on the socket
-	// stands in for it, lifted once the session is up.
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = raw.SetDeadline(deadline)
+	// stands in for it — the context's or Timeout, whichever comes first —
+	// lifted once the session is up. After that the context closes the
+	// session when it is done.
+	deadline := time.Now().Add(cfg.Timeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
 	}
+	_ = raw.SetDeadline(deadline)
 	sc, chans, reqs, err := ssh.NewClientConn(raw, cfg.Addr, sshCfg)
 	if err != nil {
 		_ = raw.Close()

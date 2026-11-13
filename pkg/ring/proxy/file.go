@@ -9,6 +9,7 @@ import (
 	"github.com/vmkteam/ringsrv/pkg/client/upstream"
 	"github.com/vmkteam/ringsrv/pkg/ring"
 	"github.com/vmkteam/ringsrv/pkg/ring/files"
+	"github.com/vmkteam/ringsrv/pkg/ring/public"
 	"github.com/vmkteam/ringsrv/pkg/ring/target"
 )
 
@@ -29,7 +30,7 @@ func (p *Manager) file(ctx context.Context, prof *target.Profile, req Request) (
 		res, err = p.files.Fetch(ctx, prof, req.Path, limit)
 	}
 	if err != nil {
-		return nil, fileError(err)
+		return nil, routeError(err)
 	}
 
 	var doc any = res.Text
@@ -54,19 +55,26 @@ func (p *Manager) file(ctx context.Context, prof *target.Profile, req Request) (
 	}, nil
 }
 
-// fileError maps what the route returned onto the kinds the layer above knows.
-// A failure the upstream answered with keeps its status: an upstream that said
+// routeError maps what a route this server answers itself — the file route,
+// the public-only check — returned onto the kinds the layer above knows. A
+// failure the upstream answered with keeps its status: an upstream that said
 // no is not a failure of this server, and the layer above logs only those.
-func fileError(err error) *Error {
+func routeError(err error) *Error {
 	var (
-		ref *files.RefusedError
-		up  *files.UpstreamError
+		fileRef *files.RefusedError
+		fileUp  *files.UpstreamError
+		pubRef  *public.RefusedError
+		pubUp   *public.UpstreamError
 	)
 	switch {
-	case errors.As(err, &ref):
-		return &Error{Kind: FailRefused, Code: ref.Code, Err: err}
-	case errors.As(err, &up):
-		return &Error{Kind: FailUpstream, Err: err, Status: up.Status}
+	case errors.As(err, &fileRef):
+		return &Error{Kind: FailRefused, Code: fileRef.Code, Err: err}
+	case errors.As(err, &pubRef):
+		return &Error{Kind: FailRefused, Code: pubRef.Code, Err: err}
+	case errors.As(err, &fileUp):
+		return &Error{Kind: FailUpstream, Err: err, Status: fileUp.Status}
+	case errors.As(err, &pubUp):
+		return &Error{Kind: FailUpstream, Err: err, Status: pubUp.Status}
 	case errors.Is(err, files.ErrBadParams):
 		return &Error{Kind: FailBadArgs, Err: err}
 	case errors.Is(err, upstream.ErrTimeout):

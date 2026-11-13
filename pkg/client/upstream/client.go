@@ -313,6 +313,14 @@ func (c *Client) userAgent() string {
 	return c.opts.AppName + " (Version:" + c.opts.Version + ")"
 }
 
+// Slot takes a slot in the instance's concurrency limit for a call that does
+// not go through Do — a session with a store over another protocol — so that
+// it counts against the same limit. The release has to run.
+func (c *Client) Slot(ctx context.Context) (func(), error) { return c.acquire(ctx) }
+
+// Timeout is what one call may take, for a caller that bounds its own.
+func (c *Client) Timeout() time.Duration { return c.opts.Timeout }
+
 // acquire takes a slot in the concurrency limit and returns the release, which
 // runs on every path out: a leaked slot degrades the whole instance and looks
 // like an unrelated slowdown.

@@ -207,3 +207,13 @@ func TestScale_Halves(t *testing.T) {
 	assert.Equal(t, blue, got.RGBAAt(0, 0))
 	assert.Equal(t, blue, got.RGBAAt(maxImageSide-1, 939))
 }
+
+// A strip far longer than it is high keeps its row through the halving.
+func TestScale_Strip(t *testing.T) {
+	t.Parallel()
+	red := color.RGBA{R: 255, A: 255}
+	got := scale(solid(8000, 3, red), maxImageSide)
+	assert.Equal(t, image.Rect(0, 0, maxImageSide, 1), got.Bounds())
+	assert.Equal(t, red, got.RGBAAt(0, 0))
+	assert.Equal(t, red, got.RGBAAt(maxImageSide-1, 0))
+}

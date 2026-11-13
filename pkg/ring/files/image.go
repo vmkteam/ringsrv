@@ -202,7 +202,8 @@ func scale(src image.Image, side int) *image.RGBA {
 	w, h := fit(b.Dx(), b.Dy(), side)
 	cur, cw, ch := src, b.Dx(), b.Dy()
 	for max(cw, ch) >= 2*side {
-		cw, ch = cw/2, ch/2
+		// A side never halves to nothing: an 8000×3 strip keeps its row.
+		cw, ch = max(cw/2, 1), max(ch/2, 1)
 		half := image.NewRGBA(image.Rect(0, 0, cw, ch))
 		draw.ApproxBiLinear.Scale(half, half.Bounds(), cur, cur.Bounds(), draw.Src, nil)
 		cur = half

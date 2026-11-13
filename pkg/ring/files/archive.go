@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/vmkteam/mcpkit/redact"
 	"golang.org/x/text/encoding/charmap"
@@ -115,9 +116,11 @@ func unpack(zf *zip.File, limit int64) ([]byte, error) {
 
 // entryName is a file's name in an archive as UTF-8. A name the archive does
 // not mark as UTF-8 and that is not valid UTF-8 is CP866: that is what the
-// archiver built into Windows writes for Cyrillic names.
+// archiver built into Windows writes for Cyrillic names. A valid UTF-8 name
+// without the mark — the archiver of macOS writes those, and Go reports them
+// as NonUTF8 too — stays as it is.
 func entryName(zf *zip.File) string {
-	if !zf.NonUTF8 {
+	if !zf.NonUTF8 || utf8.ValidString(zf.Name) {
 		return zf.Name
 	}
 	name, err := charmap.CodePage866.NewDecoder().String(zf.Name)

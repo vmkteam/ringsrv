@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -39,6 +40,7 @@ func storeTree(t *testing.T, dir string) {
 	write("отчёт за ноябрь.csv", []byte("a;b\n1;2\n"))
 	write("export.zip", filestest.Zip(t, filestest.Entry{Name: "stock.csv", Body: []byte("code;qty\n1;5\n")}))
 	write("2026/11/feed.txt", []byte("first\nsecond\n"))
+	write("v1..2.csv", []byte("a\n"))
 }
 
 func storeFetch(t *testing.T, prof *target.Profile, route, path string) (*Result, error) {
@@ -112,7 +114,8 @@ func TestWebDAV_List(t *testing.T) {
 	for _, l := range res.Text.Lines {
 		names = append(names, l[strings.LastIndex(l, "\t")+1:])
 	}
-	assert.Equal(t, []string{"2026/", "export.zip", "prices.csv", "отчёт за ноябрь.csv"}, names, "a folder ends with /, nothing from beside the root")
+	assert.Equal(t, []string{"2026/", "export.zip", "prices.csv", "v1..2.csv", "отчёт за ноябрь.csv"}, names,
+		"a folder ends with /, nothing from beside the root; a name with .. is listed, only not read")
 
 	res, err = storeFetch(t, prof, target.FilesListPath, "/files/list?path=/2026/11/")
 	require.NoError(t, err)
@@ -254,4 +257,47 @@ func TestSFTP_Refused(t *testing.T) {
 	_, err = storeFetch(t, sftpProfile(t, srv, root, other.HostKey), target.FilesListPath, "/files/list")
 	require.Error(t, err, "a server whose key is not the pinned one")
 	assert.Contains(t, err.Error(), "handshake")
+}
+
+// A name with .. in it is refused as a name WebDAV cannot carry here, not
+// failed as a broken path in the HTTP layer.
+func TestWebDAV_DottedName(t *testing.T) {
+	t.Parallel()
+	prof := davProfile(t, davServer(t), "secret")
+	_, err := storeFetch(t, prof, target.FilesReadPath, "/files/read?path=/v1..2.csv")
+	require.Error(t, err)
+	assert.Equal(t, CodeUnsupported, refusalCode(err), err.Error())
+}
+
+// A server that takes the connection and then says nothing does not hold the
+// call: the session has the client's timeout.
+func TestSFTP_StalledServer(t *testing.T) {
+	t.Parallel()
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, acceptErr := ln.Accept()
+			if acceptErr != nil {
+				return
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+		}
+	}()
+	srv, root := sftpStand(t)
+	prof := storeProfile(t, fmt.Sprintf(`BaseURL      = "sftp://%s"
+Store        = "sftp"
+Root         = %q
+SFTPUser     = %q
+SFTPPassword = %q
+SFTPHostKey  = %q`, ln.Addr().String(), root, srv.User, srv.Password, srv.HostKey))
+
+	client := upstream.New(upstream.Options{Timeout: 300 * time.Millisecond, MaxBodyBytes: 1 << 20, MaxConcurrent: 2})
+	start := time.Now()
+	_, err = NewFetcher(client, nil).Store(context.Background(), prof, target.FilesListPath, "/files/list", 32<<10)
+	require.Error(t, err)
+	require.ErrorIs(t, err, upstream.ErrTimeout)
+	assert.Less(t, time.Since(start), 5*time.Second)
 }

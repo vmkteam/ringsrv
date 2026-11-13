@@ -100,17 +100,11 @@ func (f *Fetcher) mmDownload(ctx context.Context, t upstream.Target, info mmInfo
 	resp, err := f.client.Do(ctx, t, upstream.Request{
 		Method: http.MethodGet, Path: "/api/v4/files/" + info.ID, MaxBytes: info.Size + 1,
 	})
-	switch {
-	case err != nil:
+	if err != nil {
 		return nil, err
-	case resp.Status >= 300 && resp.Status < 400:
-		return nil, answered(resp.Status, "mattermost download of %s answered %d with a redirect, which is not followed", info.ID, resp.Status)
-	case resp.Status != http.StatusOK:
-		return nil, answered(resp.Status, "mattermost download of %s answered %d", info.ID, resp.Status)
-	case resp.Truncated, int64(len(resp.Body)) != info.Size:
-		return nil, answered(resp.Status, "download_mismatch: %s came as %d bytes, its info says %d", info.ID, len(resp.Body), info.Size)
-	case isHTML(resp.ContentType) && mediaType(info.MimeType) != "text/html":
-		return nil, answered(resp.Status, "download_mismatch: %s came as an HTML page, not as %s", info.ID, info.MimeType)
+	}
+	if err := checkDownload(resp, "mattermost", info.ID, info.Size, mediaType(info.MimeType) == "text/html"); err != nil {
+		return nil, err
 	}
 	return resp.Body, nil
 }

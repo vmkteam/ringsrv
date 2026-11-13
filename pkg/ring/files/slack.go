@@ -157,19 +157,32 @@ func (f *Fetcher) slackDownload(ctx context.Context, t upstream.Target, file sla
 	resp, err := f.client.Download(ctx, t, file.DownloadURL, upstream.DownloadOptions{
 		Hosts: []string{slackFileHost}, MaxBytes: file.Size + 1,
 	})
-	switch {
-	case err != nil:
+	if err != nil {
 		return nil, err
-	case resp.Status >= 300 && resp.Status < 400:
-		return nil, answered(resp.Status, "slack download of %s answered %d with a redirect — the token was not accepted for the file", file.ID, resp.Status)
-	case resp.Status != http.StatusOK:
-		return nil, answered(resp.Status, "slack download of %s answered %d", file.ID, resp.Status)
-	case resp.Truncated, int64(len(resp.Body)) != file.Size:
-		return nil, answered(resp.Status, "download_mismatch: %s came as %d bytes, files.info says %d", file.ID, len(resp.Body), file.Size)
-	case isHTML(resp.ContentType) && file.Filetype != "html":
-		return nil, answered(resp.Status, "download_mismatch: %s came as an HTML page, not as a %s file", file.ID, file.Filetype)
+	}
+	if err := checkDownload(resp, "slack", file.ID, file.Size, file.Filetype == "html"); err != nil {
+		return nil, err
 	}
 	return resp.Body, nil
+}
+
+// checkDownload checks that a download answered with the file: a 200 and not
+// a redirect — which without the credential is the way to a sign-in page, and
+// is never followed — the size the file's metadata announced, and not an HTML
+// page unless the file is one.
+func checkDownload(resp *upstream.Response, who, id string, size int64, html bool) error {
+	switch {
+	case resp.Status >= 300 && resp.Status < 400:
+		return answered(resp.Status, "%s download of %s answered %d with a redirect, which is not followed — usually the credential was not accepted for the file",
+			who, id, resp.Status)
+	case resp.Status != http.StatusOK:
+		return answered(resp.Status, "%s download of %s answered %d", who, id, resp.Status)
+	case resp.Truncated, int64(len(resp.Body)) != size:
+		return answered(resp.Status, "download_mismatch: %s came as %d bytes, its metadata says %d", id, len(resp.Body), size)
+	case isHTML(resp.ContentType) && !html:
+		return answered(resp.Status, "download_mismatch: %s came as an HTML page, not as the file", id)
+	}
+	return nil
 }
 
 func isHTML(contentType string) bool { return mediaType(contentType) == "text/html" }
