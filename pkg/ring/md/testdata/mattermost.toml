@@ -1,0 +1,43 @@
+[Profiles.mattermost]
+Description      = "prod · Mattermost: поиск, треды, история и файлы публичных каналов"
+BaseURL          = "https://chat.example.com"
+Headers          = ["Authorization: Bearer {{ .mattermostToken }}"]
+AllowMethods     = ["GET", "POST"]
+ReadOnlyPost     = true
+AllowPaths       = [
+  "^/api/v4/teams(/[a-z0-9]{26}|/name/[A-Za-z0-9._-]+)?$",
+  "^/api/v4/teams/[a-z0-9]{26}/channels$",
+  "^/api/v4/teams/([a-z0-9]{26}|name/[A-Za-z0-9._-]+)/channels/name/[A-Za-z0-9._-]+$",
+  "^/api/v4/channels/[a-z0-9]{26}(/posts)?$",
+  "^/api/v4/posts/[a-z0-9]{26}(/thread)?$",
+  "^/api/v4/users/([a-z0-9]{26}|username/[A-Za-z0-9._-]+)$",
+  "POST ^/api/v4/(teams/[a-z0-9]{26}/)?posts/search$",
+  "POST ^/api/v4/teams/[a-z0-9]{26}/(channels|files)/search$",
+  "POST ^/api/v4/users/(ids|usernames)$",
+  "^/files/download$",
+]
+AllowQueryParams = ["page", "per_page<=200", "since", "before", "after", "include_deleted", "file", "offset", "limit<=1000", "grep", "sheet", "entry"]
+Files            = "mattermost"
+PublicOnly       = "mattermost"
+Redact           = "warn"
+DefaultJQ        = '''
+def clean: with_entries(select(.value != null and .value != "" and .value != [] and .value != 0));
+def post: {id, channel_id, root_id, user_id, override_username: .props.override_username, create_at, edit_at, message, reply_count,
+  files: [.metadata.files[]? | {id, name, extension, size}],
+  attachments: [.props.attachments[]? | {pretext, title, text, fields: [.fields[]? | {title, value}]} | clean]} | clean;
+def person: {id, username, first_name, last_name, nickname, position, is_bot} | clean;
+def channel: {id, name, display_name, type, team_id, purpose, header, delete_at} | clean;
+def team: {id, name, display_name, description, type, delete_at} | clean;
+if type == "object" and has("posts") and has("order") then
+  {posts: [.order[]? as $id | .posts[$id] | select(. != null) | post]} + ({has_next, next_post_id, prev_post_id} | clean)
+elif type == "object" and has("file_infos") then
+  {files: [.order[]? as $id | .file_infos[$id] | select(. != null) | {id, name, extension, size, channel_id, post_id}]}
+elif type == "object" and has("message") and has("channel_id") then post
+elif type == "object" and has("username") then person
+elif type == "object" and has("team_id") and has("display_name") then channel
+elif type == "object" and has("allowed_domains") then team
+elif type == "array" and length > 0 and (.[0] | type == "object" and has("username")) then [.[] | person]
+elif type == "array" and length > 0 and (.[0] | type == "object" and has("team_id") and has("display_name")) then [.[] | channel]
+elif type == "array" and length > 0 and (.[0] | type == "object" and has("allowed_domains")) then [.[] | team]
+else . end
+'''

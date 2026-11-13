@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"regexp"
 	"slices"
 	"sort"
@@ -17,6 +18,7 @@ import (
 	"github.com/vmkteam/ringsrv/pkg/ring"
 
 	"github.com/vmkteam/mcpkit/redact"
+	"golang.org/x/crypto/ssh"
 )
 
 // KnownTools is the closed set of tool names a role may reference. A typo in a
@@ -354,7 +356,14 @@ func (p *Profile) validate(env string) error {
 	if p.Description != "" && !strings.HasPrefix(p.Description, env+" ") {
 		errs = append(errs, fmt.Errorf("field Description must start with %q — the contour comes first", env))
 	}
-	if err := validateBaseURL(p.BaseURL); err != nil {
+	validateURL := validateBaseURL
+	if p.Store == StoreSFTP {
+		validateURL = validateSFTPURL
+	}
+	if err := validateURL(p.BaseURL); err != nil {
+		errs = append(errs, err)
+	}
+	if err := validatePathPrefix(p.PathPrefix); err != nil {
 		errs = append(errs, err)
 	}
 	for _, h := range p.Headers {
@@ -393,6 +402,9 @@ func (p *Profile) validate(env string) error {
 		}
 	}
 	errs = append(errs, p.validateQueryParams()...)
+	errs = append(errs, p.validateFiles()...)
+	errs = append(errs, p.validatePublicOnly()...)
+	errs = append(errs, p.validateStore()...)
 	if p.MaxBytes < 0 {
 		errs = append(errs, fmt.Errorf("MaxBytes %d must be >= 0", p.MaxBytes))
 	}
@@ -476,6 +488,129 @@ func compileAllowPaths(patterns, methods []string) (rules []allowRule, postBound
 		rules = append(rules, allowRule{method: method, re: re})
 	}
 	return rules, postBound, errs
+}
+
+// validateStore checks a file store: a known kind, the only thing the profile
+// does, its root, the routes it is reached by and, for SFTP, credentials that
+// parse and a host key to check the server against.
+func (p *Profile) validateStore() []error {
+	if p.Store == "" {
+		return p.noSFTPFields()
+	}
+	if p.Store != StoreWebDAV && p.Store != StoreSFTP {
+		return []error{fmt.Errorf("field Store %q: the kinds are %q and %q", p.Store, StoreWebDAV, StoreSFTP)}
+	}
+	var errs []error
+	if p.Files != "" || p.PublicOnly != "" || p.PathPrefix != "" {
+		errs = append(errs, errors.New("field Store makes the profile a file store: Files, PublicOnly and PathPrefix belong to an API and are not accepted with it"))
+	}
+	if hasNonGET(p.AllowMethods) || p.Write || p.ReadOnlyPost {
+		errs = append(errs, errors.New("field Store is read-only: AllowMethods is GET alone, without Write or ReadOnlyPost"))
+	}
+	if !p.Allows(http.MethodGet, FilesListPath) && !p.Allows(http.MethodGet, FilesReadPath) {
+		errs = append(errs, fmt.Errorf("field Store is set but AllowPaths lets neither %s nor %s through", FilesListPath, FilesReadPath))
+	}
+	// A store passes nothing on; a pattern for anything else would be a
+	// promise every call to it breaks.
+	for _, r := range p.allow {
+		if !r.re.MatchString(FilesListPath) && !r.re.MatchString(FilesReadPath) {
+			errs = append(errs, fmt.Errorf("field Store is set and AllowPaths has %q, which is neither %s nor %s — a store answers nothing else",
+				r.re.String(), FilesListPath, FilesReadPath))
+		}
+	}
+	if _, ok := p.queryRules[storePathParam]; p.QueryGuarded() && !ok {
+		errs = append(errs, fmt.Errorf("field Store is set but AllowQueryParams has no %q — no call could name a file", storePathParam))
+	}
+	if err := validateRoot(p.Root); err != nil {
+		errs = append(errs, err)
+	}
+	if p.Store == StoreWebDAV {
+		return append(errs, p.noSFTPFields()...)
+	}
+	if len(p.Headers) > 0 {
+		errs = append(errs, errors.New("an sftp store sends no headers: its credentials are SFTPUser with SFTPPassword or SFTPKey"))
+	}
+	return append(errs, p.validateSFTP()...)
+}
+
+// storePathParam is the parameter that names a file or a directory of a store.
+const storePathParam = "path"
+
+func (p *Profile) noSFTPFields() []error {
+	if p.SFTPUser != "" || p.SFTPPassword != "" || p.SFTPKey != "" || p.SFTPHostKey != "" {
+		return []error{errors.New("SFTPUser, SFTPPassword, SFTPKey and SFTPHostKey belong to Store = \"sftp\"")}
+	}
+	return nil
+}
+
+func (p *Profile) validateSFTP() []error {
+	var errs []error
+	if p.SFTPUser == "" {
+		errs = append(errs, errors.New("an sftp store needs SFTPUser"))
+	}
+	switch {
+	case (p.SFTPPassword == "") == (p.SFTPKey == ""):
+		errs = append(errs, errors.New("an sftp store needs one of SFTPPassword and SFTPKey"))
+	case p.SFTPKey != "":
+		if _, err := ssh.ParsePrivateKey([]byte(p.SFTPKey)); err != nil {
+			errs = append(errs, fmt.Errorf("SFTPKey: %w", err))
+		}
+	}
+	if p.SFTPHostKey == "" {
+		errs = append(errs, errors.New("an sftp store needs SFTPHostKey — the server's key as an authorized_keys line (ssh-keyscan): an unpinned key is a server nobody checked"))
+	} else if _, _, _, _, err := ssh.ParseAuthorizedKey([]byte(p.SFTPHostKey)); err != nil {
+		errs = append(errs, fmt.Errorf("SFTPHostKey: %w", err))
+	}
+	return errs
+}
+
+// validateRoot accepts an absolute, clean directory: what the model calls /
+// has to be one fixed place.
+func validateRoot(root string) error {
+	if root == "" {
+		return nil
+	}
+	if !strings.HasPrefix(root, "/") || path.Clean(root) != root || strings.ContainsAny(root, "\\\x00?#") {
+		return fmt.Errorf("field Root %q must be an absolute clean path: /dir[/dir…], no . or .., no trailing /", root)
+	}
+	return nil
+}
+
+// validateSFTPURL accepts sftp://host[:port] and nothing more: the user and
+// the credentials have fields of their own.
+func validateSFTPURL(raw string) error {
+	u, err := url.Parse(raw)
+	switch {
+	case err != nil:
+		return fmt.Errorf("BaseURL %q: %w", raw, err)
+	case u.Scheme != StoreSFTP || u.Host == "" || u.Hostname() == "":
+		return fmt.Errorf("BaseURL %q of an sftp store must be sftp://host[:port]", raw)
+	case u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "":
+		return fmt.Errorf("BaseURL %q must be sftp://host[:port] only: the user is SFTPUser, the directory is Root", raw)
+	}
+	return nil
+}
+
+// pathPrefixRe is a mount path: segments of letters, digits and . _ ~ -,
+// starting with / and not ending with one.
+var pathPrefixRe = regexp.MustCompile(`^(/[A-Za-z0-9._~-]+)+$`)
+
+// validatePathPrefix accepts a mount path that cannot change what the path
+// after it means: no step up, no query, no encoding to read twice, no empty
+// segment for the path after it to start a host with.
+func validatePathPrefix(prefix string) error {
+	if prefix == "" {
+		return nil
+	}
+	if !pathPrefixRe.MatchString(prefix) {
+		return fmt.Errorf("PathPrefix %q must be /segment[/segment…] of letters, digits and . _ ~ -, without a trailing /", prefix)
+	}
+	for seg := range strings.SplitSeq(prefix[1:], "/") {
+		if seg == "." || seg == ".." {
+			return fmt.Errorf("PathPrefix %q must not contain %q", prefix, seg)
+		}
+	}
+	return nil
 }
 
 // validateBaseURL guards the SSRF surface: https only, host only, no path
@@ -803,6 +938,103 @@ func (p *Profile) validateQueryParams() []error {
 	}
 	return errs
 }
+
+// validateFiles checks what the file route needs from its profile: a provider
+// this server knows, the path in the allowlist — the route answers only what
+// the allowlist let through — the file id among the parameters when they are
+// listed, and an Authorization header, the one credential the download carries.
+func (p *Profile) validateFiles() []error {
+	switch p.Files {
+	case "":
+		return nil
+	case FilesSlack, FilesMattermost:
+	default:
+		return []error{fmt.Errorf("field Files %q: the providers are %q and %q", p.Files, FilesSlack, FilesMattermost)}
+	}
+	var errs []error
+	if !p.Allows(http.MethodGet, FilesPath) {
+		errs = append(errs, fmt.Errorf("field Files is set but AllowPaths does not let GET %s through — the route would never be reached", FilesPath))
+	}
+	if _, ok := p.queryRules[filesIDParam]; p.QueryGuarded() && !ok {
+		errs = append(errs, fmt.Errorf("field Files is set but AllowQueryParams has no %q — no call could name a file", filesIDParam))
+	}
+	if !headerNames(p.headers)["authorization"] {
+		errs = append(errs, errors.New("field Files is set but the profile sends no Authorization header — the download would go without a credential"))
+	}
+	fileMethods := slackFileMethods
+	if p.Files == FilesMattermost {
+		fileMethods = mattermostFileMethods
+		// The route keeps files to public channels; the rest of the profile
+		// has to keep everything else to them, or the promise is half kept.
+		if p.PublicOnly != PublicMattermost {
+			errs = append(errs, fmt.Errorf("field Files is %q but PublicOnly is not: the other paths of the profile would answer from private channels and direct messages", FilesMattermost))
+		}
+	}
+	for _, path := range fileMethods {
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			if p.Allows(method, path) {
+				errs = append(errs, fmt.Errorf("field Files is set and AllowPaths lets %s %s through: it describes or serves the files "+
+					"of private channels and direct messages too, which the file route exists to keep out", method, path))
+				break
+			}
+		}
+	}
+	return errs
+}
+
+// slackFileMethods describe files wherever they are shared. The file route
+// reads them for the model and checks what it read; a profile that let the
+// model call them itself would skip the check.
+var slackFileMethods = []string{"/api/files.info", "/api/files.list", "/api/files.remote.info", "/api/files.remote.list"}
+
+// mattermostFileMethods are the same for Mattermost, on a sample id.
+var mattermostFileMethods = []string{
+	"/api/v4/files/" + sampleMattermostID, "/api/v4/files/" + sampleMattermostID + "/info",
+	"/api/v4/files/" + sampleMattermostID + "/preview", "/api/v4/files/" + sampleMattermostID + "/thumbnail",
+	"/api/v4/files/" + sampleMattermostID + "/link", "/api/v4/posts/" + sampleMattermostID + "/files/info",
+}
+
+// sampleMattermostID stands for any id in the paths a catalogue is checked
+// against.
+const sampleMattermostID = "abcdefghijklmnopqrstuvwxyz"
+
+// validatePublicOnly checks the provider, and that the allowlist does not
+// name a path the check is known to refuse at every call — what a profile
+// may call is better learnt at load time than from a refusal. A path that is
+// neither here nor in the check's table is refused when called.
+func (p *Profile) validatePublicOnly() []error {
+	switch p.PublicOnly {
+	case "":
+		return nil
+	case PublicMattermost:
+	default:
+		return []error{fmt.Errorf("field PublicOnly %q: the only provider is %q", p.PublicOnly, PublicMattermost)}
+	}
+	var errs []error
+	for _, s := range mattermostUnchecked {
+		if p.Allows(s.method, s.path) {
+			errs = append(errs, fmt.Errorf("field PublicOnly is set and AllowPaths lets %s %s through: its answer is about channels "+
+				"the check cannot tell public from private, so every call to it would be refused", s.method, s.path))
+		}
+	}
+	return errs
+}
+
+// mattermostUnchecked are paths of the Mattermost API that answer about the
+// account's own channels — private ones and direct messages among them — or
+// about a channel's members, which the public-only check has no rule for.
+var mattermostUnchecked = []struct{ method, path string }{
+	{http.MethodGet, "/api/v4/users/me/channels"},
+	{http.MethodGet, "/api/v4/users/me/teams/" + sampleMattermostID + "/channels"},
+	{http.MethodGet, "/api/v4/users/" + sampleMattermostID + "/teams/" + sampleMattermostID + "/channels"},
+	{http.MethodGet, "/api/v4/channels"},
+	{http.MethodGet, "/api/v4/channels/" + sampleMattermostID + "/members"},
+	{http.MethodGet, "/api/v4/users/" + sampleMattermostID + "/posts/flagged"},
+	{http.MethodPost, "/api/v4/channels/direct"},
+}
+
+// filesIDParam is the parameter that names the file on FilesPath.
+const filesIDParam = "file"
 
 // validateQueryPair accepts one "key=value" for Query: the key non-empty and
 // neither side carrying a separator the join would read as a second pair.

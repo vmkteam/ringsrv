@@ -70,10 +70,12 @@ func outcomeOf(code string) string {
 	switch code {
 	case ErrCodeForbiddenRole, ErrCodePathNotAllowed, ErrCodeMethodNotAllowed, ErrCodeHeaderNotAllowed,
 		ErrCodeRPCMethodNotAllowed, ErrCodeQueryParamNotAllowed,
-		ErrCodePathDenied, ErrCodeIntentRequired, ErrCodeWriteBudget, ErrCodeWriteNotBatched:
+		ErrCodePathDenied, ErrCodeIntentRequired, ErrCodeWriteBudget, ErrCodeWriteNotBatched,
+		ErrCodeFileNotPublic, ErrCodeNotPublic:
 		return outcomeForbidden
 	case ErrCodeBadArgs, ErrCodeTargetUnknown, ErrCodeRepoUnknown, ErrCodeRefUnknown,
-		ErrCodeAmbiguous, ErrCodeRangeTooBig, ErrCodeNoPrev, ErrCodeJQFailed:
+		ErrCodeAmbiguous, ErrCodeRangeTooBig, ErrCodeNoPrev, ErrCodeJQFailed,
+		ErrCodeFileTooLarge, ErrCodeUnsupportedFileType:
 		return outcomeBadArgs
 	case ErrCodeTimeout:
 		return outcomeTimeout

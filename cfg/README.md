@@ -168,6 +168,11 @@ Write              = true                         # only roles with AllowWrite s
 | `AllowHeaders` | — | the header names a **call** may set itself; empty means none. A name on this list must not be sent by the profile itself, and the forbidden families are never accepted |
 | `Write` | — | the profile changes state; roles without `AllowWrite` do not see it. Mutually exclusive with `ReadOnlyPost` |
 | `ReadOnlyPost` | — | the API reads through POST; on such a profile an unprefixed pattern is GET only, and the POST paths are named explicitly. Nothing beyond GET and POST |
+| `Files` | — | `slack` or `mattermost` (below). `slack`: the server answers `GET /files/download?file=F…` itself — `files.info` with the profile's token, a refusal unless the file is shared in a public channel, at most 10 MB, then the bytes from `files.slack.com` only, carrying the `Authorization` header alone. Text comes back as numbered lines (`offset`, `limit`, `grep`), a png/jpeg/gif/webp picture as an image content block, an xlsx workbook as the lines of one sheet (`sheet`), a zip archive as its table of contents or, with `entry`, as one of its files shown by the same rules; `DefaultJQ` does not run over it. Requires `^/files/download$` in `AllowPaths`, `file` in `AllowQueryParams` when the list is set (add `offset`, `limit<=1000`, `grep`, `sheet`, `entry` for the rest), and an `Authorization` header. Do not allow `/api/files.info` itself: with `files:read` it describes files from private channels and direct messages too. How the model reads the answer is `pkg/ring/md/md/tools/files.md` |
+| `Store` / `Root` | — | `webdav` or `sftp`: the profile is a read-only file store, not an API — see below. `Root` is the directory the model sees as `/`: a URL path on a WebDAV server, a directory on an SFTP one; absolute and clean |
+| `SFTPUser`, `SFTPPassword` / `SFTPKey`, `SFTPHostKey` | with `Store = "sftp"` | the account, one of a password and a private key (PEM), and the server's host key as an authorized_keys line (`ssh-keyscan -t ed25519 host`). The host key is required: a key accepted on first use is a server nobody checked |
+| `PathPrefix` | — | the path the API is mounted under on its host, put before every call's path — the allowlist, the cheat sheet and the file route see the path without it. `/segment[/segment…]` of letters, digits and `. _ ~ -`, no trailing `/`: the same API behind another mount is the same profile with another prefix |
+| `PublicOnly` | — | `mattermost`: the answers are kept to public channels by the server, for a credential that sees more — see below. Every path has a rule (the channel a path names is checked before the call, the answer after it); a path without a rule is refused at the call, and the paths known to answer about the account's own channels fail the load |
 
 **How to write `AllowPaths`.** The path is matched without the query, so
 `^/api/v1/query$` also permits `/api/v1/query?query=up`. End a pattern with `$`
@@ -219,6 +224,133 @@ not followed: a 3xx is returned to the model with its `Location`.
 annotation creation and the datasource proxy against every profile: a pattern
 that lets one of them through fails the load, however well-meant the widening
 was.
+
+**A chat kept to public channels: Mattermost.** A Mattermost token has no
+scopes: the account reads every private channel it was added to and every
+direct message written to it, and its search covers the channels it is a member
+of. `PublicOnly = "mattermost"` makes the server hold the line instead:
+
+- a path that names a channel — its history — is checked before the call: the
+  channel's type is looked up (`GET /api/v4/channels/<id>`, cached for a
+  minute) and anything but `O` is `NotPublic`;
+- a thread or a single post from a channel that is not public is refused
+  whole; a search keeps the posts of public channels and drops the rest from
+  `posts`, `order` and `matches`; a list of channels keeps those of type `O`;
+  a permalink preview of a post that is not public is cut out of the post
+  that links it;
+- an answer cut at the read limit or one that does not parse is refused: what
+  cannot be read cannot be checked;
+- a path the rules do not know is refused at the call, and a profile whose
+  `AllowPaths` lets through `/api/v4/users/me/channels`, `/api/v4/channels`,
+  a channel's `members` and the like fails the load.
+
+`Files = "mattermost"` requires `PublicOnly = "mattermost"` and answers
+`GET /files/download?file=<26-character id>`: the file's info, its channel
+checked the same way, the bytes from `/api/v4/files/<id>` through the same
+profile. `/api/v4/files/…` itself may not be in `AllowPaths`. A file the
+account may not see (403) is `FileNotPublic`.
+
+The account needs no membership anywhere to read the history, threads and
+files of public channels — only membership of their team. Its search, though,
+is Mattermost's, and covers only the channels it is a member of. A server-side
+extension that answers the same paths with the same JSON (a plugin searching
+public channels without membership) is reached with `PathPrefix`; the checks
+above run all the same. The profile, as `pkg/ring/md/md/targets/mattermost.md`
+is checked against it:
+
+```toml
+[Profiles.mattermost]
+Description      = "prod · Mattermost: поиск, треды, история и файлы публичных каналов"
+BaseURL          = "https://chat.example.com"
+Headers          = ["Authorization: Bearer {{ .mattermostToken }}"]
+AllowMethods     = ["GET", "POST"]
+ReadOnlyPost     = true
+AllowPaths       = [
+  "^/api/v4/teams(/[a-z0-9]{26}|/name/[A-Za-z0-9._-]+)?$",
+  "^/api/v4/teams/[a-z0-9]{26}/channels$",
+  "^/api/v4/teams/([a-z0-9]{26}|name/[A-Za-z0-9._-]+)/channels/name/[A-Za-z0-9._-]+$",
+  "^/api/v4/channels/[a-z0-9]{26}(/posts)?$",
+  "^/api/v4/posts/[a-z0-9]{26}(/thread)?$",
+  "^/api/v4/users/([a-z0-9]{26}|username/[A-Za-z0-9._-]+)$",
+  "POST ^/api/v4/(teams/[a-z0-9]{26}/)?posts/search$",
+  "POST ^/api/v4/teams/[a-z0-9]{26}/(channels|files)/search$",
+  "POST ^/api/v4/users/(ids|usernames)$",
+  "^/files/download$",
+]
+AllowQueryParams = ["page", "per_page<=200", "since", "before", "after", "include_deleted", "file", "offset", "limit<=1000", "grep", "sheet", "entry"]
+Files            = "mattermost"
+PublicOnly       = "mattermost"
+Redact           = "warn"
+DefaultJQ        = '''
+def clean: with_entries(select(.value != null and .value != "" and .value != [] and .value != 0));
+def post: {id, channel_id, root_id, user_id, override_username: .props.override_username, create_at, edit_at, message, reply_count,
+  files: [.metadata.files[]? | {id, name, extension, size}],
+  attachments: [.props.attachments[]? | {pretext, title, text, fields: [.fields[]? | {title, value}]} | clean]} | clean;
+def person: {id, username, first_name, last_name, nickname, position, is_bot} | clean;
+def channel: {id, name, display_name, type, team_id, purpose, header, delete_at} | clean;
+def team: {id, name, display_name, description, type, delete_at} | clean;
+if type == "object" and has("posts") and has("order") then
+  {posts: [.order[]? as $id | .posts[$id] | select(. != null) | post]} + ({has_next, next_post_id, prev_post_id} | clean)
+elif type == "object" and has("file_infos") then
+  {files: [.order[]? as $id | .file_infos[$id] | select(. != null) | {id, name, extension, size, channel_id, post_id}]}
+elif type == "object" and has("message") and has("channel_id") then post
+elif type == "object" and has("username") then person
+elif type == "object" and has("team_id") and has("display_name") then channel
+elif type == "object" and has("allowed_domains") then team
+elif type == "array" and length > 0 and (.[0] | type == "object" and has("username")) then [.[] | person]
+elif type == "array" and length > 0 and (.[0] | type == "object" and has("team_id") and has("display_name")) then [.[] | channel]
+elif type == "array" and length > 0 and (.[0] | type == "object" and has("allowed_domains")) then [.[] | team]
+else . end
+'''
+```
+
+**A file store: WebDAV and SFTP.** `Store` turns a profile into a directory
+tree the model reads by path. The server answers two routes itself and passes
+nothing on — a pattern in `AllowPaths` for anything else fails the load:
+
+- `GET /files/list?path=<dir>` — a directory as lines of size, modification
+  time and name, a directory with `/` after it, a symlink with `@`;
+- `GET /files/read?path=<file>` — a file shown as the file route shows one:
+  text, picture, xlsx sheet, zip archive (`offset`, `limit`, `grep`, `sheet`,
+  `entry`), at most 10 MB.
+
+A path is clean and below `Root` before it leaves: `..`, `\` and control
+characters are refused. On SFTP every component of the path below `Root` is
+`lstat`-ed and a symlink anywhere on it is refused rather than followed; the
+account's own permissions on the server are the fence behind this one, so give
+it a read-only account. WebDAV goes through the profile like any call —
+`BaseURL` (https), `Headers` for the credential, the same timeouts and limits —
+with `PROPFIND` and `GET`; SFTP dials `BaseURL` (`sftp://host[:port]`) per call
+and checks the pinned host key. Plain FTP is not supported: it sends the
+password in the clear.
+
+```toml
+[Profiles.feeds]
+Description      = "prod · Выгрузки партнёров по дням (help files)"
+BaseURL          = "sftp://files.example.com:22"
+AllowMethods     = ["GET"]
+AllowPaths       = ["^/files/(list|read)$"]
+AllowQueryParams = ["path", "offset", "limit<=1000", "grep", "sheet", "entry"]
+Store            = "sftp"
+Root             = "/upload/feeds"
+SFTPUser         = "ringsrv"
+SFTPKey          = "{{ .feedsSftpKey }}"
+SFTPHostKey      = "ssh-ed25519 AAAA… files.example.com"
+
+[Profiles.share]
+Description      = "prod · Общая папка документов (help files)"
+BaseURL          = "https://dav.example.com"
+Headers          = ["Authorization: Basic {{ .shareBasic }}"]
+AllowMethods     = ["GET"]
+AllowPaths       = ["^/files/(list|read)$"]
+AllowQueryParams = ["path", "offset", "limit<=1000", "grep", "sheet", "entry"]
+Store            = "webdav"
+Root             = "/remote.php/dav/files/ringsrv/shared"
+```
+
+A store has no cheat sheet of its own: how to read it is `help(["files"])`,
+which every role with a store or a `Files` target can read — say so in the
+`Description`.
 
 ## `[Databases.<name>]` — a read-only database
 
@@ -421,6 +553,16 @@ points:
   allows GET and POST only and requires a `POST`-prefixed pattern;
 - the samples of merge, delete, deploy, annotations and the datasource proxy
   pass through no profile;
+- `Store` is `webdav` or `sftp`, alone (no `Files`, `PublicOnly`,
+  `PathPrefix`), GET only, its `AllowPaths` lead to `/files/list` or
+  `/files/read` and nowhere else, `path` is listed when the parameters are,
+  `Root` is absolute and clean; an sftp store has `sftp://host[:port]`, no
+  headers, `SFTPUser`, one of `SFTPPassword` and a `SFTPKey` that parses, and
+  a `SFTPHostKey` that parses;
+- `PathPrefix` is `/segment[/segment…]` without `.`, `..`, a trailing `/` or
+  anything to decode; `Files` and `PublicOnly` name a known provider,
+  `Files = "mattermost"` comes with `PublicOnly = "mattermost"`, and neither
+  lets through the paths that would skip its check;
 - `DefaultJQ` compiles; `TimeFormat` is one of four; `Query` is `key=value`
   without `&?#` or spaces; `Redact` is one of three and its rules are known;
 - `TimeBodyParams` and `AllowRPCMethods` only appear on a profile with a method

@@ -1,6 +1,10 @@
 package rpc
 
-import "github.com/vmkteam/mcpkit/mcp"
+import (
+	"github.com/vmkteam/ringsrv/pkg/ring/files"
+
+	"github.com/vmkteam/mcpkit/mcp"
+)
 
 // Single source of truth for rpc-layer types: tool argument structs with their
 // reflected JSON schemas, and the domain shapes the tools answer with. The
@@ -90,8 +94,24 @@ type APICallItem struct {
 	Redacted []string `json:"redacted,omitempty"`
 	// DedupOf points at the earlier item this answer was copied from.
 	DedupOf *int `json:"dedup_of,omitempty"`
+	// Image points at the content block that carries the picture this call
+	// served; Data then describes the file.
+	Image *ImageRef `json:"image,omitempty"`
 	// Error carries the refusal or the failure of this one call.
 	Error *ToolError `json:"error,omitempty"`
+
+	// img is the picture until it becomes a content block.
+	img *files.Image
+}
+
+// ImageRef is a picture in the answer: the index of its block in content[] —
+// 0 is this JSON, pictures follow in the order of results[] — and what it is.
+type ImageRef struct {
+	Content  int    `json:"content"`
+	MimeType string `json:"mimetype"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+	Bytes    int    `json:"bytes"`
 }
 
 // ToolError is the error envelope shared by every tool. With so few tools the

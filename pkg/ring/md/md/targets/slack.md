@@ -1,6 +1,6 @@
 ---
 name: slack
-description: Slack через api_call — поиск сообщений и чтение тредов в публичных каналах; тред по ссылке, синтаксис query, ошибки при HTTP 200, ts, thread_ts и permalink.
+description: Slack через api_call — поиск сообщений, чтение тредов и вложенных файлов (текст, картинки, xlsx, zip) в публичных каналах; тред по ссылке, файл по id, синтаксис query, ошибки при HTTP 200, ts, thread_ts и permalink.
 ---
 
 # Таргет `slack` — обсуждения
@@ -13,8 +13,9 @@ description: Slack через api_call — поиск сообщений и чт
 `matches` с полями `channel` (id), `name`, `user` (имя автора, у бота — `bot`), `ts`,
 `thread_ts`, `reply_count`, `text`, `permalink`, а с `include_context_messages=true` ещё
 `context` — соседние сообщения `before` и `after`; у треда и истории — `user` (id), `ts`,
-`thread_ts`, `reply_count`, `text`. Разметка `blocks`, реакции и файлы отбрасываются.
-Нужны — передайте свой `jq`.
+`thread_ts`, `reply_count`, `text` и `files` (`id`, `name`, `filetype`, `size`), если к
+сообщению приложены файлы. Разметка `blocks` и реакции отбрасываются. Нужны — передайте
+свой `jq`.
 
 **На этом таргете включена редакция PII** в режиме `warn`: тело не меняется, список
 сработавших правил приезжает в поле `redacted`.
@@ -29,13 +30,15 @@ description: Slack через api_call — поиск сообщений и чт
 | `/api/conversations.list` | каналы: id по имени |
 | `/api/conversations.info` | один канал: тема и назначение; число участников — только с `include_num_members=true` |
 | `/api/users.info` | кто такой `U…` из текста |
+| `/files/download` | содержимое файла по `file` — текст строками, картинка, лист xlsx, оглавление или файл zip; отвечает сам ringsrv |
 
 Параметры запроса — только `query`, `sort`, `sort_dir`, `after`, `before`, `highlight`,
 `include_bots`, `include_context_messages`, `disable_semantic_search`, `team_id`, `channel`,
 `ts`, `limit`, `cursor`, `oldest`, `latest`, `inclusive`, `types`, `exclude_archived`,
-`include_num_members`, `include_all_metadata`, `include_locale`, `user`; `limit` не больше
-1000, как у истории Slack, а у поиска Slack сам режет его до 20. Другое имя или больше —
-`QueryParamNotAllowed` со списком, а не `invalid_arguments` при HTTP 200.
+`include_num_members`, `include_all_metadata`, `include_locale`, `user`, `file`, `offset`,
+`grep`, `sheet`, `entry`; `limit` не больше 1000, как у истории Slack, а у поиска Slack сам режет его до 20.
+Другое имя или больше — `QueryParamNotAllowed` со списком, а не `invalid_arguments` при
+HTTP 200.
 
 ## Примеры
 
@@ -49,6 +52,10 @@ description: Slack через api_call — поиск сообщений и чт
 /api/conversations.list?types=public_channel&exclude_archived=true&limit=200
 /api/conversations.info?channel=C0123456789&include_num_members=true
 /api/users.info?user=U0123456789
+/files/download?file=F0123456789&grep=ERR-1042
+/files/download?file=F0123456789&offset=200&limit=100
+/files/download?file=F0123456789&sheet=2&grep=809000001
+/files/download?file=F0123456789&entry=export/prices.csv
 ```
 
 ## Как прочитать тред
@@ -66,6 +73,16 @@ description: Slack через api_call — поиск сообщений и чт
 **Из поиска.** `thread_ts` в результате есть — сообщение лежит в треде (корень или ответ):
 `conversations.replies` с `channel` и `ts=<thread_ts>`. `thread_ts` нет — сообщение вне
 треда; что было рядом, покажет `include_context_messages=true`.
+
+## Как прочитать файл
+
+1. Найдите тред, в `files` у сообщения — `id`, `name`, `filetype` и `size` вложения.
+2. `/files/download?file=F0123456789` — содержимое. Отдаются только файлы, расшаренные в
+   публичный канал, не больше 10 МБ.
+3. Текст приходит строками `"N: …"` (окно — `offset`/`limit`, поиск — `grep`), картинка —
+   отдельным блоком, книга xlsx — строками листа (`sheet`), архив zip — оглавлением, а с
+   `entry` — одним своим файлом. Подробно, с отказами — `help(["files"])`. Файл, который Slack
+   назвал `binary`, читается по расширению в имени.
 
 ## Грабли
 
@@ -93,6 +110,9 @@ description: Slack через api_call — поиск сообщений и чт
 - **`missing_scope`, `channel_not_found` и `not_in_channel`** для канала, который точно
   есть, означают приватный канал или чужой workspace: токен его не видит, и это ожидаемо.
   Публичные каналы видны все, вступать в них не нужно.
+- **Большой файл — только `grep` или окнами**, `;` в `grep` — как `%3B`: подробно в
+  `help(["files"])`. Отказы файла — `FileNotPublic` (приватный канал, личка), `FileTooLarge`,
+  `UnsupportedFileType` (`docx`, `pdf`, `xls`, `rar` и прочее двоичное).
 - **Глубина истории — свойство плана Slack**, не таргета: на бесплатном плане поиск
   не видит дальше 90 дней.
 - **Лимиты:** поиск — около 10 запросов в минуту на весь таргет, потому что токен один на

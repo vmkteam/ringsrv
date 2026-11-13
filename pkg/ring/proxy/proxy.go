@@ -11,6 +11,8 @@ import (
 
 	"github.com/vmkteam/ringsrv/pkg/client/upstream"
 	"github.com/vmkteam/ringsrv/pkg/ring"
+	"github.com/vmkteam/ringsrv/pkg/ring/files"
+	"github.com/vmkteam/ringsrv/pkg/ring/public"
 	"github.com/vmkteam/ringsrv/pkg/ring/target"
 
 	"github.com/vmkteam/mcpkit/mcp"
@@ -22,13 +24,16 @@ import (
 // is doing it and cutting the answer to size.
 type Manager struct {
 	client    *upstream.Client
+	files     *files.Fetcher
+	public    *public.Guard
 	jqTimeout time.Duration
 	maxBytes  int
 }
 
 // NewManager wires the upstream client with the instance-wide defaults.
 func NewManager(client *upstream.Client, jqTimeout time.Duration, maxBytes int) *Manager {
-	return &Manager{client: client, jqTimeout: jqTimeout, maxBytes: maxBytes}
+	guard := public.NewGuard(client)
+	return &Manager{client: client, files: files.NewFetcher(client, guard), public: guard, jqTimeout: jqTimeout, maxBytes: maxBytes}
 }
 
 // Configured reports whether calls can be made at all.
@@ -61,6 +66,11 @@ type Answer struct {
 	// DefaultJQ is set when the profile's filter ran because the request brought
 	// none: a trimmed answer has to be distinguishable from the whole thing.
 	DefaultJQ bool
+	// File is set by the file route: what was served, for the audit.
+	File *files.Meta
+	// Image is a picture the file route served, for a content block of its
+	// own; Data then describes the file.
+	Image *files.Image
 }
 
 // Kinds of failure, so the layer above maps one value to its error code and
@@ -70,12 +80,16 @@ const (
 	FailTimeout  = "timeout"
 	FailUpstream = "upstream"
 	FailJQ       = "jq"
+	// FailRefused is the file route declining a file; Code says why.
+	FailRefused = "refused"
 )
 
 // Error is a call that did not produce an answer.
 type Error struct {
 	Kind string
 	Err  error
+	// Code is the refusal's own code, for FailRefused.
+	Code string
 	// Status is the upstream status when there was one.
 	Status int
 	// Keys are the top-level keys of the body, filled when a jq expression found
@@ -90,6 +104,27 @@ func (e *Error) Unwrap() error { return e.Err }
 func (p *Manager) Do(ctx context.Context, prof *target.Profile, req Request) (*Answer, *Error) {
 	if !p.Configured() {
 		return nil, &Error{Kind: FailUpstream, Err: errors.New("upstream client is not configured")}
+	}
+	// A path this server answers itself: nothing below applies to it, neither
+	// the time expansion nor the pinned parameters of an upstream call.
+	if prof.ServesFiles(req.Method, req.Path) || prof.StoreRoute(req.Method, req.Path) != "" {
+		return p.file(ctx, prof, req)
+	}
+	// A store passes nothing on: its routes are all there is of it.
+	if prof.Store != "" {
+		return nil, &Error{Kind: FailBadArgs, Err: fmt.Errorf("a %s store answers GET %s and GET %s, nothing else",
+			prof.Store, target.FilesListPath, target.FilesReadPath)}
+	}
+
+	// A profile kept to public channels: the path's own channel is checked
+	// before the call, and its answer after it.
+	var check public.Check
+	if prof.PublicOnly != "" {
+		c, err := p.public.Before(ctx, prof, req.Method, req.Path)
+		if err != nil {
+			return nil, routeError(err)
+		}
+		check = c
 	}
 
 	// Relative time is expanded by the profile: what the model may write and
@@ -136,6 +171,13 @@ func (p *Manager) Do(ctx context.Context, prof *target.Profile, req Request) (*A
 		}
 	}
 
+	if prof.PublicOnly != "" {
+		body, err := p.public.After(ctx, prof, check, resp.Body, resp.Truncated)
+		if err != nil {
+			return nil, routeError(err)
+		}
+		resp.Body = body
+	}
 	return p.shape(ctx, prof, req, resp)
 }
 

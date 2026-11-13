@@ -83,6 +83,40 @@ type Profile struct {
 	// of Write/ReadOnlyPost must be set when AllowMethods goes beyond GET.
 	ReadOnlyPost bool
 
+	// PathPrefix is the path an API is mounted under on its host, put before
+	// every call's path on the way out. AllowPaths and the cheat sheet see the
+	// path without it: the same API behind a different mount is the same
+	// profile with another prefix.
+	PathPrefix string
+
+	// Files names the provider behind FilesPath, a path this server answers
+	// itself instead of passing it on: the file's metadata from the upstream,
+	// the check that it is public, then its bytes.
+	Files string
+
+	// Store makes the profile a read-only file store instead of an API: the
+	// server answers FilesListPath and FilesReadPath itself, under Root, and
+	// passes nothing on. StoreWebDAV goes through BaseURL and Headers as any
+	// call does; StoreSFTP dials BaseURL (sftp://host[:port]) with the SFTP*
+	// credentials and the pinned host key.
+	Store string
+	// Root is the directory of the store the model sees as /: a URL path on a
+	// WebDAV server, a directory on an SFTP one.
+	Root string
+	// SFTP credentials: a user, a password or a private key (PEM), and the
+	// server's host key as an authorized_keys line — required: a key that is
+	// not pinned is a server that is not checked.
+	SFTPUser     string
+	SFTPPassword string
+	SFTPKey      string
+	SFTPHostKey  string
+
+	// PublicOnly names the provider whose rules keep this profile's answers to
+	// public channels, for an upstream whose credential sees more than that:
+	// every path is checked before or after the call, and a path the rules do
+	// not know is refused rather than passed unchecked.
+	PublicOnly string
+
 	name string
 	// Derived from the public fields by validate(), so per-call lookups repeat
 	// no work whose answer cannot change.
@@ -141,9 +175,10 @@ func (p *Profile) AllowsAnyHeader() bool { return len(p.allowHeaders) > 0 }
 // Upstream converts the profile into what the HTTP client needs.
 func (p *Profile) Upstream() upstream.Target {
 	return upstream.Target{
-		Name:    p.name,
-		BaseURL: p.BaseURL,
-		Headers: p.headers,
+		Name:       p.name,
+		BaseURL:    p.BaseURL,
+		PathPrefix: p.PathPrefix,
+		Headers:    p.headers,
 	}
 }
 
@@ -191,6 +226,56 @@ func (p *Profile) Allows(method, path string) bool {
 		}
 	}
 	return false
+}
+
+// FilesSlack is the Files provider for Slack: files.info, then the download
+// from files.slack.com.
+const FilesSlack = "slack"
+
+// Store kinds, and the paths a store answers.
+const (
+	StoreWebDAV = "webdav"
+	StoreSFTP   = "sftp"
+	// FilesListPath lists a directory of a store, FilesReadPath shows a file.
+	FilesListPath = "/files/list"
+	FilesReadPath = "/files/read"
+)
+
+// StoreRoute is the store path a call names, empty when it names none.
+// Compared on the path as CleanPath leaves it, the string the allowlist
+// matched.
+func (p *Profile) StoreRoute(method, path string) string {
+	if p.Store == "" || !strings.EqualFold(method, http.MethodGet) {
+		return ""
+	}
+	clean, ok := upstream.CleanPath(path)
+	if !ok || clean != FilesListPath && clean != FilesReadPath {
+		return ""
+	}
+	return clean
+}
+
+// FilesMattermost is the Files provider for Mattermost: the file's info, the
+// type of its channel, then the bytes from the same API.
+const FilesMattermost = "mattermost"
+
+// PublicMattermost is the PublicOnly provider for Mattermost: the rules of
+// its API v4.
+const PublicMattermost = "mattermost"
+
+// FilesPath is the path a Files profile answers itself. Nothing is proxied
+// there: the upstream has no such path, and the allowlist still has to name it.
+const FilesPath = "/files/download"
+
+// ServesFiles reports whether a call is the file route rather than one to pass
+// on. Compared on the path as CleanPath leaves it, the string the allowlist
+// matched.
+func (p *Profile) ServesFiles(method, path string) bool {
+	if p.Files == "" || !strings.EqualFold(method, http.MethodGet) {
+		return false
+	}
+	clean, ok := upstream.CleanPath(path)
+	return ok && clean == FilesPath
 }
 
 // AllowsMethod reports whether the method is in the profile's allowlist.

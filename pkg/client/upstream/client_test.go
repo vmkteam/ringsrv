@@ -49,6 +49,29 @@ func TestDo_PassesPathAndQueryVerbatim(t *testing.T) {
 	assert.JSONEq(t, `{"status":"success"}`, string(resp.Body))
 }
 
+// A mounted API gets its prefix before every path; the query after it travels
+// as written, and a path that tries to step out of the mount is refused.
+func TestDo_PathPrefix(t *testing.T) {
+	t.Parallel()
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	c := New(Options{Timeout: 5 * time.Second})
+	tgt := targetFor(srv.URL)
+	tgt.PathPrefix = "/plugins/com.example.facade"
+	_, err := c.Do(context.Background(), tgt, Request{Method: http.MethodGet, Path: "/api/v4/channels/abc/posts?page=1"})
+	require.NoError(t, err)
+	assert.Equal(t, "/plugins/com.example.facade/api/v4/channels/abc/posts", gotPath)
+	assert.Equal(t, "page=1", gotQuery)
+
+	_, err = c.Do(context.Background(), tgt, Request{Method: http.MethodGet, Path: "/../../api/v4/users"})
+	require.Error(t, err, "a path that climbs out of the mount")
+}
+
 // D1 and D5 in one test: the upstream sees the profile's credentials and
 // nothing the caller might have attached.
 func TestDo_SendsOnlyProfileHeaders(t *testing.T) {

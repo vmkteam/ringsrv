@@ -191,6 +191,31 @@ func (r queryRule) allows(n float64) bool {
 	return true
 }
 
+// QueryPair is one key=value of a call's query string, decoded the way the
+// upstream reads it.
+type QueryPair struct {
+	Key, Value string
+}
+
+// QueryPairs splits a path's query string the way CheckQuery reads it: on &
+// and on ;, keys and values decoded, a pair without a key skipped. A route this
+// server answers itself reads its parameters through here, so what it acts on
+// is what the allowlist saw — url.ParseQuery, for one, refuses the ; that
+// CheckQuery splits on.
+func QueryPairs(rawPath string) []QueryPair {
+	_, query, _ := strings.Cut(rawPath, "?")
+	query, _, _ = strings.Cut(query, "#")
+	var out []QueryPair
+	for part := range strings.FieldsFuncSeq(query, func(r rune) bool { return r == '&' || r == ';' }) {
+		rawKey, rawValue, _ := strings.Cut(part, "=")
+		if rawKey == "" {
+			continue
+		}
+		out = append(out, QueryPair{Key: unescaped(rawKey), Value: unescaped(rawValue)})
+	}
+	return out
+}
+
 // QueryGuarded reports whether the profile lists its query parameters.
 func (p *Profile) QueryGuarded() bool { return len(p.queryRules) > 0 }
 
@@ -211,13 +236,8 @@ func (p *Profile) CheckQuery(rawPath string) error {
 	if strings.Contains(rawPath, "#") {
 		return errFragment
 	}
-	_, query, _ := strings.Cut(rawPath, "?")
-	for part := range strings.FieldsFuncSeq(query, func(r rune) bool { return r == '&' || r == ';' }) {
-		rawKey, rawValue, _ := strings.Cut(part, "=")
-		if rawKey == "" {
-			continue
-		}
-		key := unescaped(rawKey)
+	for _, pair := range QueryPairs(rawPath) {
+		key := pair.Key
 		if queryDenied(key) {
 			return fmt.Errorf("query parameter %q is never accepted: it says who the caller is", key)
 		}
@@ -234,7 +254,7 @@ func (p *Profile) CheckQuery(rawPath string) error {
 		if rule.op == "" {
 			continue
 		}
-		value := unescaped(rawValue)
+		value := pair.Value
 		n, ok := number(value)
 		if !ok {
 			return fmt.Errorf("query parameter %s=%s: the bound %s needs a number or a duration like 15s", key, value, rule.spec)
