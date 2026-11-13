@@ -357,6 +357,9 @@ func (p *Profile) validate(env string) error {
 	if err := validateBaseURL(p.BaseURL); err != nil {
 		errs = append(errs, err)
 	}
+	if err := validatePathPrefix(p.PathPrefix); err != nil {
+		errs = append(errs, err)
+	}
 	for _, h := range p.Headers {
 		if err := validateHeader(h); err != nil {
 			errs = append(errs, err)
@@ -394,6 +397,7 @@ func (p *Profile) validate(env string) error {
 	}
 	errs = append(errs, p.validateQueryParams()...)
 	errs = append(errs, p.validateFiles()...)
+	errs = append(errs, p.validatePublicOnly()...)
 	if p.MaxBytes < 0 {
 		errs = append(errs, fmt.Errorf("MaxBytes %d must be >= 0", p.MaxBytes))
 	}
@@ -477,6 +481,28 @@ func compileAllowPaths(patterns, methods []string) (rules []allowRule, postBound
 		rules = append(rules, allowRule{method: method, re: re})
 	}
 	return rules, postBound, errs
+}
+
+// pathPrefixRe is a mount path: segments of letters, digits and . _ ~ -,
+// starting with / and not ending with one.
+var pathPrefixRe = regexp.MustCompile(`^(/[A-Za-z0-9._~-]+)+$`)
+
+// validatePathPrefix accepts a mount path that cannot change what the path
+// after it means: no step up, no query, no encoding to read twice, no empty
+// segment for the path after it to start a host with.
+func validatePathPrefix(prefix string) error {
+	if prefix == "" {
+		return nil
+	}
+	if !pathPrefixRe.MatchString(prefix) {
+		return fmt.Errorf("PathPrefix %q must be /segment[/segment…] of letters, digits and . _ ~ -, without a trailing /", prefix)
+	}
+	for seg := range strings.SplitSeq(prefix[1:], "/") {
+		if seg == "." || seg == ".." {
+			return fmt.Errorf("PathPrefix %q must not contain %q", prefix, seg)
+		}
+	}
+	return nil
 }
 
 // validateBaseURL guards the SSRF surface: https only, host only, no path
@@ -810,11 +836,12 @@ func (p *Profile) validateQueryParams() []error {
 // the allowlist let through — the file id among the parameters when they are
 // listed, and an Authorization header, the one credential the download carries.
 func (p *Profile) validateFiles() []error {
-	if p.Files == "" {
+	switch p.Files {
+	case "":
 		return nil
-	}
-	if p.Files != FilesSlack {
-		return []error{fmt.Errorf("field Files %q: the only provider is %q", p.Files, FilesSlack)}
+	case FilesSlack, FilesMattermost:
+	default:
+		return []error{fmt.Errorf("field Files %q: the providers are %q and %q", p.Files, FilesSlack, FilesMattermost)}
 	}
 	var errs []error
 	if !p.Allows(http.MethodGet, FilesPath) {
@@ -826,10 +853,19 @@ func (p *Profile) validateFiles() []error {
 	if !headerNames(p.headers)["authorization"] {
 		errs = append(errs, errors.New("field Files is set but the profile sends no Authorization header — the download would go without a credential"))
 	}
-	for _, path := range slackFileMethods {
+	fileMethods := slackFileMethods
+	if p.Files == FilesMattermost {
+		fileMethods = mattermostFileMethods
+		// The route keeps files to public channels; the rest of the profile
+		// has to keep everything else to them, or the promise is half kept.
+		if p.PublicOnly != PublicMattermost {
+			errs = append(errs, fmt.Errorf("field Files is %q but PublicOnly is not: the other paths of the profile would answer from private channels and direct messages", FilesMattermost))
+		}
+	}
+	for _, path := range fileMethods {
 		for _, method := range []string{http.MethodGet, http.MethodPost} {
 			if p.Allows(method, path) {
-				errs = append(errs, fmt.Errorf("field Files is set and AllowPaths lets %s %s through: with files:read it describes the files "+
+				errs = append(errs, fmt.Errorf("field Files is set and AllowPaths lets %s %s through: it describes or serves the files "+
 					"of private channels and direct messages too, which the file route exists to keep out", method, path))
 				break
 			}
@@ -842,6 +878,52 @@ func (p *Profile) validateFiles() []error {
 // reads them for the model and checks what it read; a profile that let the
 // model call them itself would skip the check.
 var slackFileMethods = []string{"/api/files.info", "/api/files.list", "/api/files.remote.info", "/api/files.remote.list"}
+
+// mattermostFileMethods are the same for Mattermost, on a sample id.
+var mattermostFileMethods = []string{
+	"/api/v4/files/" + sampleMattermostID, "/api/v4/files/" + sampleMattermostID + "/info",
+	"/api/v4/files/" + sampleMattermostID + "/preview", "/api/v4/files/" + sampleMattermostID + "/thumbnail",
+	"/api/v4/files/" + sampleMattermostID + "/link", "/api/v4/posts/" + sampleMattermostID + "/files/info",
+}
+
+// sampleMattermostID stands for any id in the paths a catalogue is checked
+// against.
+const sampleMattermostID = "abcdefghijklmnopqrstuvwxyz"
+
+// validatePublicOnly checks the provider, and that the allowlist does not
+// name a path the check is known to refuse at every call — what a profile
+// may call is better learnt at load time than from a refusal. A path that is
+// neither here nor in the check's table is refused when called.
+func (p *Profile) validatePublicOnly() []error {
+	switch p.PublicOnly {
+	case "":
+		return nil
+	case PublicMattermost:
+	default:
+		return []error{fmt.Errorf("field PublicOnly %q: the only provider is %q", p.PublicOnly, PublicMattermost)}
+	}
+	var errs []error
+	for _, s := range mattermostUnchecked {
+		if p.Allows(s.method, s.path) {
+			errs = append(errs, fmt.Errorf("field PublicOnly is set and AllowPaths lets %s %s through: its answer is about channels "+
+				"the check cannot tell public from private, so every call to it would be refused", s.method, s.path))
+		}
+	}
+	return errs
+}
+
+// mattermostUnchecked are paths of the Mattermost API that answer about the
+// account's own channels — private ones and direct messages among them — or
+// about a channel's members, which the public-only check has no rule for.
+var mattermostUnchecked = []struct{ method, path string }{
+	{http.MethodGet, "/api/v4/users/me/channels"},
+	{http.MethodGet, "/api/v4/users/me/teams/" + sampleMattermostID + "/channels"},
+	{http.MethodGet, "/api/v4/users/" + sampleMattermostID + "/teams/" + sampleMattermostID + "/channels"},
+	{http.MethodGet, "/api/v4/channels"},
+	{http.MethodGet, "/api/v4/channels/" + sampleMattermostID + "/members"},
+	{http.MethodGet, "/api/v4/users/" + sampleMattermostID + "/posts/flagged"},
+	{http.MethodPost, "/api/v4/channels/direct"},
+}
 
 // filesIDParam is the parameter that names the file on FilesPath.
 const filesIDParam = "file"

@@ -116,7 +116,7 @@ func TestArchive_PictureOnMaskingTarget(t *testing.T) {
 	f := filestest.NewSlack(t)
 	f.Add("F0000000206", "export.zip", "zip", "application/zip", "hosted", exportZip(t), nil)
 	client := upstream.New(upstream.Options{Timeout: 5 * time.Second, MaxBodyBytes: 1 << 20})
-	fetcher := NewFetcher(client)
+	fetcher := NewFetcher(client, nil)
 
 	_, err := fetcher.Fetch(context.Background(), profileFor(t, f, "mask"), "/files/download?file=F0000000206&entry=export%2Fshot.png", 32<<10)
 	assert.Equal(t, CodeUnsupported, refusalCode(err))

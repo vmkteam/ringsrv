@@ -45,7 +45,8 @@ type fileID struct {
 
 // fileIDs are the ids of each provider.
 var fileIDs = map[string]fileID{
-	target.FilesSlack: {regexp.MustCompile(`^F[A-Z0-9]{6,20}$`), "F followed by capital letters and digits, from files[] of a message"},
+	target.FilesSlack:      {regexp.MustCompile(`^F[A-Z0-9]{6,20}$`), "F followed by capital letters and digits, from files[] of a message"},
+	target.FilesMattermost: {regexp.MustCompile(`^[a-z0-9]{26}$`), "26 lower-case letters and digits, from file_ids of a post"},
 }
 
 // parseParams reads the route's parameters through the splitter the allowlist

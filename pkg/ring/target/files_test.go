@@ -103,6 +103,25 @@ func TestParse_RejectsBrokenFiles(t *testing.T) {
 	}
 }
 
+func TestParse_PathPrefix(t *testing.T) {
+	t.Parallel()
+	with := func(prefix string) string {
+		return strings.Replace(filesTOML, `Files            = "slack"`, `Files            = "slack"`+"\nPathPrefix       = "+prefix, 1)
+	}
+	c, err := Parse([]byte(with(`"/plugins/com.example.facade"`)))
+	require.NoError(t, err)
+	p, ok := c.Profile("chat")
+	require.True(t, ok)
+	assert.Equal(t, "/plugins/com.example.facade", p.Upstream().PathPrefix)
+	assert.True(t, p.AllowsPath("/api/conversations.replies"), "the allowlist sees the path without the prefix")
+
+	for _, bad := range []string{`"plugins"`, `"/plugins/"`, `"/a//b"`, `"/a/../b"`, `"/a/./b"`, `"/a?b=1"`, `"/a%2Fb"`, `"/a b"`} {
+		_, err := Parse([]byte(with(bad)))
+		require.Error(t, err, bad)
+		assert.Contains(t, err.Error(), "PathPrefix", bad)
+	}
+}
+
 // The route reads its parameters through the same splitter the allowlist uses:
 // a ; separates pairs for both, and a %3B is a ; inside a value for both.
 func TestQueryPairs(t *testing.T) {

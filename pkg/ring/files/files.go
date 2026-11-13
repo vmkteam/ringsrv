@@ -118,9 +118,16 @@ type Result struct {
 	Image *Image
 }
 
+// Channels says whether a channel of a profile's upstream is public, for a
+// provider whose files name the channel they were posted in.
+type Channels interface {
+	ChannelPublic(ctx context.Context, prof *target.Profile, id string) (bool, error)
+}
+
 // Fetcher serves the route for every Files profile of an instance.
 type Fetcher struct {
-	client *upstream.Client
+	client   *upstream.Client
+	channels Channels
 	// decodes bounds how many images are decoded at once: a batch runs four
 	// calls together, and one decode may take maxDecodeBytes.
 	decodes chan struct{}
@@ -132,9 +139,10 @@ type Fetcher struct {
 const maxDecodes = 1
 
 // NewFetcher builds the route over the instance's upstream client: the same
-// concurrency limit and transport as every other call.
-func NewFetcher(client *upstream.Client) *Fetcher {
-	return &Fetcher{client: client, decodes: make(chan struct{}, maxDecodes)}
+// concurrency limit and transport as every other call. channels answers for
+// the providers that need it.
+func NewFetcher(client *upstream.Client, channels Channels) *Fetcher {
+	return &Fetcher{client: client, channels: channels, decodes: make(chan struct{}, maxDecodes)}
 }
 
 // Fetch serves one call of the route. budget is the size the text answer has
@@ -144,6 +152,8 @@ func (f *Fetcher) Fetch(ctx context.Context, prof *target.Profile, rawPath strin
 	switch prof.Files {
 	case target.FilesSlack:
 		load = f.slack
+	case target.FilesMattermost:
+		load = f.mattermost
 	default:
 		// The catalogue refuses an unknown provider at load time.
 		return nil, fmt.Errorf("files: profile %q names no provider this server knows", prof.Name())

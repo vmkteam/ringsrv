@@ -20,6 +20,7 @@ import (
 	"github.com/vmkteam/ringsrv/pkg/ring/dbq"
 	"github.com/vmkteam/ringsrv/pkg/ring/files"
 	"github.com/vmkteam/ringsrv/pkg/ring/proxy"
+	"github.com/vmkteam/ringsrv/pkg/ring/public"
 	"github.com/vmkteam/ringsrv/pkg/ring/target"
 
 	"github.com/vmkteam/embedlog"
@@ -72,6 +73,9 @@ const (
 	ErrCodeFileNotPublic       = files.CodeNotPublic
 	ErrCodeFileTooLarge        = files.CodeTooLarge
 	ErrCodeUnsupportedFileType = files.CodeUnsupported
+	// ErrCodeNotPublic is a public-only target refusing a path or an answer
+	// about a channel that is not public.
+	ErrCodeNotPublic = public.CodeNotPublic
 )
 
 // ErrNoRole is returned when the caller's groups match no role. It must not

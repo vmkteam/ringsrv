@@ -67,6 +67,9 @@ type Target struct {
 	// BaseURL decides where the request goes, and it is the only thing that
 	// does: nothing from the caller may influence the host.
 	BaseURL string
+	// PathPrefix goes before every path of Do: an API mounted under a path of
+	// its host. The catalogue checked it; the path after it is the caller's.
+	PathPrefix string
 	// Headers are "Name: value" pairs with credentials already substituted.
 	Headers []string
 }
@@ -183,6 +186,9 @@ type Request struct {
 // Do performs one call.
 func (c *Client) Do(ctx context.Context, t Target, r Request) (*Response, error) {
 	method, path, body := r.Method, r.Path, r.Body
+	if t.PathPrefix != "" && strings.HasPrefix(path, "/") {
+		path = t.PathPrefix + path
+	}
 	url, err := buildURL(t.BaseURL, path)
 	if err != nil {
 		return nil, err

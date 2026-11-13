@@ -50,7 +50,7 @@ func noise(w, h int) *image.NRGBA {
 	return img
 }
 
-func newTestFetcher() *Fetcher { return NewFetcher(nil) }
+func newTestFetcher() *Fetcher { return NewFetcher(nil, nil) }
 
 func TestImage_SmallPassesThrough(t *testing.T) {
 	t.Parallel()

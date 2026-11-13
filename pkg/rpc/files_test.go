@@ -195,7 +195,6 @@ func TestFiles_NotPublicAudited(t *testing.T) {
 // A workbook inside an archive comes as the lines of a sheet, its PII masked
 // like any text, and the audit names the file inside as well as the archive.
 func TestFiles_ArchiveEntryAudited(t *testing.T) {
-	t.Parallel()
 	book := filestest.XLSX(t, filestest.Workbook{
 		Shared: []string{"code", "owner", "ann@example.com"},
 		Sheets: []filestest.Sheet{{Name: "Лист1", Rows: `<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row>` +

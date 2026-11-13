@@ -49,7 +49,7 @@ Targets     = ["chat"]
 func fetch(t *testing.T, f *filestest.Slack, path string, budget int) (*Result, error) {
 	t.Helper()
 	client := upstream.New(upstream.Options{Timeout: 5 * time.Second, MaxBodyBytes: 1 << 20})
-	return NewFetcher(client).Fetch(context.Background(), profileFor(t, f, "warn"), path, budget)
+	return NewFetcher(client, nil).Fetch(context.Background(), profileFor(t, f, "warn"), path, budget)
 }
 
 func refusalCode(err error) string {
@@ -156,7 +156,7 @@ func TestFetch_RefusedBeforeDownload(t *testing.T) {
 			if tc.code == "" {
 				mode, tc.code = "mask", CodeUnsupported
 			}
-			_, err := NewFetcher(client).Fetch(context.Background(), profileFor(t, f, mode), "/files/download?file=F0000000004", 32<<10)
+			_, err := NewFetcher(client, nil).Fetch(context.Background(), profileFor(t, f, mode), "/files/download?file=F0000000004", 32<<10)
 			require.Error(t, err)
 			assert.Equal(t, tc.code, refusalCode(err), err.Error())
 			assert.Zero(t, f.Downloads(), "nothing is downloaded for a refused file")

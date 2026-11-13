@@ -71,7 +71,7 @@ func outcomeOf(code string) string {
 	case ErrCodeForbiddenRole, ErrCodePathNotAllowed, ErrCodeMethodNotAllowed, ErrCodeHeaderNotAllowed,
 		ErrCodeRPCMethodNotAllowed, ErrCodeQueryParamNotAllowed,
 		ErrCodePathDenied, ErrCodeIntentRequired, ErrCodeWriteBudget, ErrCodeWriteNotBatched,
-		ErrCodeFileNotPublic:
+		ErrCodeFileNotPublic, ErrCodeNotPublic:
 		return outcomeForbidden
 	case ErrCodeBadArgs, ErrCodeTargetUnknown, ErrCodeRepoUnknown, ErrCodeRefUnknown,
 		ErrCodeAmbiguous, ErrCodeRangeTooBig, ErrCodeNoPrev, ErrCodeJQFailed,

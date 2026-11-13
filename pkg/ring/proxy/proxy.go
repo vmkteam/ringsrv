@@ -12,6 +12,7 @@ import (
 	"github.com/vmkteam/ringsrv/pkg/client/upstream"
 	"github.com/vmkteam/ringsrv/pkg/ring"
 	"github.com/vmkteam/ringsrv/pkg/ring/files"
+	"github.com/vmkteam/ringsrv/pkg/ring/public"
 	"github.com/vmkteam/ringsrv/pkg/ring/target"
 
 	"github.com/vmkteam/mcpkit/mcp"
@@ -24,13 +25,15 @@ import (
 type Manager struct {
 	client    *upstream.Client
 	files     *files.Fetcher
+	public    *public.Guard
 	jqTimeout time.Duration
 	maxBytes  int
 }
 
 // NewManager wires the upstream client with the instance-wide defaults.
 func NewManager(client *upstream.Client, jqTimeout time.Duration, maxBytes int) *Manager {
-	return &Manager{client: client, files: files.NewFetcher(client), jqTimeout: jqTimeout, maxBytes: maxBytes}
+	guard := public.NewGuard(client)
+	return &Manager{client: client, files: files.NewFetcher(client, guard), public: guard, jqTimeout: jqTimeout, maxBytes: maxBytes}
 }
 
 // Configured reports whether calls can be made at all.
@@ -108,6 +111,17 @@ func (p *Manager) Do(ctx context.Context, prof *target.Profile, req Request) (*A
 		return p.file(ctx, prof, req)
 	}
 
+	// A profile kept to public channels: the path's own channel is checked
+	// before the call, and its answer after it.
+	var check public.Check
+	if prof.PublicOnly != "" {
+		c, err := p.public.Before(ctx, prof, req.Method, req.Path)
+		if err != nil {
+			return nil, publicError(err)
+		}
+		check = c
+	}
+
 	// Relative time is expanded by the profile: what the model may write and
 	// what a target expects is a catalogue decision, not a transport one.
 	path, err := prof.ExpandPath(req.Path, time.Now())
@@ -152,7 +166,33 @@ func (p *Manager) Do(ctx context.Context, prof *target.Profile, req Request) (*A
 		}
 	}
 
+	if prof.PublicOnly != "" {
+		body, err := p.public.After(ctx, prof, check, resp.Body, resp.Truncated)
+		if err != nil {
+			return nil, publicError(err)
+		}
+		resp.Body = body
+	}
 	return p.shape(ctx, prof, req, resp)
+}
+
+// publicError maps what the public-only check returned onto the kinds the
+// layer above knows, as fileError does for the file route.
+func publicError(err error) *Error {
+	var (
+		ref *public.RefusedError
+		up  *public.UpstreamError
+	)
+	switch {
+	case errors.As(err, &ref):
+		return &Error{Kind: FailRefused, Code: ref.Code, Err: err}
+	case errors.As(err, &up):
+		return &Error{Kind: FailUpstream, Err: err, Status: up.Status}
+	case errors.Is(err, upstream.ErrTimeout):
+		return &Error{Kind: FailTimeout, Err: err}
+	default:
+		return &Error{Kind: FailUpstream, Err: err}
+	}
 }
 
 // shape runs the filter, the redaction and the size limit over a successful
