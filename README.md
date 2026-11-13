@@ -2,7 +2,8 @@
 
 An MCP server that puts a team's read-only infrastructure behind one allowlisted
 door. A single `api_call` tool reaches the APIs named in a catalogue — Grafana,
-Prometheus, Sentry, YouTrack, GitLab, Nomad, Slack — seven more tools read code
+Prometheus, Sentry, YouTrack, GitLab, Nomad, Slack, Mattermost — and the files
+of chats and of WebDAV and SFTP stores, seven more tools read code
 from git mirrors, and two run read-only SQL against PostgreSQL and ClickHouse
 from the same catalogue. Which of them a caller sees is decided by their IdP
 group.
@@ -127,7 +128,10 @@ pkg/ring/target/      targets.toml: parsing, validation, resolving roles
 pkg/ring/md/          cheat sheets and scenarios: the content in md/ travels inside the binary
 pkg/ring/code/        the code manager: mirrors, the engine, history, blast_radius, why
 pkg/ring/proxy/       the api_call pipeline: request → jq → redaction → truncation
+pkg/ring/public/      keeping a chat's answers to its public channels
+pkg/ring/files/       the file routes: chat attachments and stores, text, pictures, xlsx, zip
 pkg/client/upstream/  HTTP to external APIs: profile headers, limits, no redirects
+pkg/client/sftpfs/    a read-only view of a directory on an SFTP server
 pkg/client/git/       mirrors and worktrees on disk
 pkg/client/codegraph/ the code-graph-mcp AST engine
 pkg/client/tracker/   parsing YouTrack and Jira answers

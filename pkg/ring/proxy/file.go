@@ -19,7 +19,15 @@ import (
 // content block, and the JSON describes the file.
 func (p *Manager) file(ctx context.Context, prof *target.Profile, req Request) (*Answer, *Error) {
 	limit := ring.PickLimit(req.MaxBytes, prof.MaxBytes, p.maxBytes)
-	res, err := p.files.Fetch(ctx, prof, req.Path, limit)
+	var (
+		res *files.Result
+		err error
+	)
+	if route := prof.StoreRoute(req.Method, req.Path); route != "" {
+		res, err = p.files.Store(ctx, prof, route, req.Path, limit)
+	} else {
+		res, err = p.files.Fetch(ctx, prof, req.Path, limit)
+	}
 	if err != nil {
 		return nil, fileError(err)
 	}

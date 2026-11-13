@@ -71,7 +71,9 @@ type Meta struct {
 	Name     string   `json:"name"`
 	FileType string   `json:"filetype"`
 	Size     int64    `json:"size"`
-	Channels []string `json:"channels"`
+	Channels []string `json:"channels,omitempty"`
+	// Modified is when a file of a store was last changed, RFC 3339.
+	Modified string `json:"modified,omitempty"`
 	// Entry is the file inside an archive that was shown, when the file is
 	// one and a file of it was asked for.
 	Entry string `json:"entry,omitempty"`

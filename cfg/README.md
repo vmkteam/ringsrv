@@ -169,6 +169,8 @@ Write              = true                         # only roles with AllowWrite s
 | `Write` | — | the profile changes state; roles without `AllowWrite` do not see it. Mutually exclusive with `ReadOnlyPost` |
 | `ReadOnlyPost` | — | the API reads through POST; on such a profile an unprefixed pattern is GET only, and the POST paths are named explicitly. Nothing beyond GET and POST |
 | `Files` | — | `slack` or `mattermost` (below). `slack`: the server answers `GET /files/download?file=F…` itself — `files.info` with the profile's token, a refusal unless the file is shared in a public channel, at most 10 MB, then the bytes from `files.slack.com` only, carrying the `Authorization` header alone. Text comes back as numbered lines (`offset`, `limit`, `grep`), a png/jpeg/gif/webp picture as an image content block, an xlsx workbook as the lines of one sheet (`sheet`), a zip archive as its table of contents or, with `entry`, as one of its files shown by the same rules; `DefaultJQ` does not run over it. Requires `^/files/download$` in `AllowPaths`, `file` in `AllowQueryParams` when the list is set (add `offset`, `limit<=1000`, `grep`, `sheet`, `entry` for the rest), and an `Authorization` header. Do not allow `/api/files.info` itself: with `files:read` it describes files from private channels and direct messages too. How the model reads the answer is `pkg/ring/md/md/tools/files.md` |
+| `Store` / `Root` | — | `webdav` or `sftp`: the profile is a read-only file store, not an API — see below. `Root` is the directory the model sees as `/`: a URL path on a WebDAV server, a directory on an SFTP one; absolute and clean |
+| `SFTPUser`, `SFTPPassword` / `SFTPKey`, `SFTPHostKey` | with `Store = "sftp"` | the account, one of a password and a private key (PEM), and the server's host key as an authorized_keys line (`ssh-keyscan -t ed25519 host`). The host key is required: a key accepted on first use is a server nobody checked |
 | `PathPrefix` | — | the path the API is mounted under on its host, put before every call's path — the allowlist, the cheat sheet and the file route see the path without it. `/segment[/segment…]` of letters, digits and `. _ ~ -`, no trailing `/`: the same API behind another mount is the same profile with another prefix |
 | `PublicOnly` | — | `mattermost`: the answers are kept to public channels by the server, for a credential that sees more — see below. Every path has a rule (the channel a path names is checked before the call, the answer after it); a path without a rule is refused at the call, and the paths known to answer about the account's own channels fail the load |
 
@@ -301,6 +303,54 @@ elif type == "array" and length > 0 and (.[0] | type == "object" and has("allowe
 else . end
 '''
 ```
+
+**A file store: WebDAV and SFTP.** `Store` turns a profile into a directory
+tree the model reads by path. The server answers two routes itself and passes
+nothing on — a pattern in `AllowPaths` for anything else fails the load:
+
+- `GET /files/list?path=<dir>` — a directory as lines of size, modification
+  time and name, a directory with `/` after it, a symlink with `@`;
+- `GET /files/read?path=<file>` — a file shown as the file route shows one:
+  text, picture, xlsx sheet, zip archive (`offset`, `limit`, `grep`, `sheet`,
+  `entry`), at most 10 MB.
+
+A path is clean and below `Root` before it leaves: `..`, `\` and control
+characters are refused. On SFTP every component of the path below `Root` is
+`lstat`-ed and a symlink anywhere on it is refused rather than followed; the
+account's own permissions on the server are the fence behind this one, so give
+it a read-only account. WebDAV goes through the profile like any call —
+`BaseURL` (https), `Headers` for the credential, the same timeouts and limits —
+with `PROPFIND` and `GET`; SFTP dials `BaseURL` (`sftp://host[:port]`) per call
+and checks the pinned host key. Plain FTP is not supported: it sends the
+password in the clear.
+
+```toml
+[Profiles.feeds]
+Description      = "prod · Выгрузки партнёров по дням (help files)"
+BaseURL          = "sftp://files.example.com:22"
+AllowMethods     = ["GET"]
+AllowPaths       = ["^/files/(list|read)$"]
+AllowQueryParams = ["path", "offset", "limit<=1000", "grep", "sheet", "entry"]
+Store            = "sftp"
+Root             = "/upload/feeds"
+SFTPUser         = "ringsrv"
+SFTPKey          = "{{ .feedsSftpKey }}"
+SFTPHostKey      = "ssh-ed25519 AAAA… files.example.com"
+
+[Profiles.share]
+Description      = "prod · Общая папка документов (help files)"
+BaseURL          = "https://dav.example.com"
+Headers          = ["Authorization: Basic {{ .shareBasic }}"]
+AllowMethods     = ["GET"]
+AllowPaths       = ["^/files/(list|read)$"]
+AllowQueryParams = ["path", "offset", "limit<=1000", "grep", "sheet", "entry"]
+Store            = "webdav"
+Root             = "/remote.php/dav/files/ringsrv/shared"
+```
+
+A store has no cheat sheet of its own: how to read it is `help(["files"])`,
+which every role with a store or a `Files` target can read — say so in the
+`Description`.
 
 ## `[Databases.<name>]` — a read-only database
 
@@ -503,6 +553,12 @@ points:
   allows GET and POST only and requires a `POST`-prefixed pattern;
 - the samples of merge, delete, deploy, annotations and the datasource proxy
   pass through no profile;
+- `Store` is `webdav` or `sftp`, alone (no `Files`, `PublicOnly`,
+  `PathPrefix`), GET only, its `AllowPaths` lead to `/files/list` or
+  `/files/read` and nowhere else, `path` is listed when the parameters are,
+  `Root` is absolute and clean; an sftp store has `sftp://host[:port]`, no
+  headers, `SFTPUser`, one of `SFTPPassword` and a `SFTPKey` that parses, and
+  a `SFTPHostKey` that parses;
 - `PathPrefix` is `/segment[/segment…]` without `.`, `..`, a trailing `/` or
   anything to decode; `Files` and `PublicOnly` name a known provider,
   `Files = "mattermost"` comes with `PublicOnly = "mattermost"`, and neither

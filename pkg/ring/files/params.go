@@ -23,6 +23,8 @@ type params struct {
 	Sheet string
 	// Entry picks a file inside an archive by its full name there.
 	Entry string
+	// Path is a file or a directory of a store, from its / (stores only).
+	Path string
 }
 
 // Bounds of the parameters. maxLimit agrees with the catalogue's limit<=1000.
@@ -32,6 +34,13 @@ const (
 	maxGrep      = 200
 	maxSheet     = 100
 	maxEntry     = 1024
+)
+
+// The parameters that name what is read: a file of a chat by its id, a file
+// or a directory of a store by its path.
+const (
+	paramFile = "file"
+	paramPath = "path"
 )
 
 // fileID is what a provider's file ids look like. Nothing but letters and
@@ -73,7 +82,7 @@ func parseParams(rawPath string, id fileID) (params, error) {
 func (p *params) set(key, value string, id fileID) error {
 	var err error
 	switch key {
-	case "file":
+	case paramFile:
 		if !id.re.MatchString(value) {
 			return fmt.Errorf("%w: file %q is not a file id — %s", ErrBadParams, value, id.hint)
 		}
@@ -100,7 +109,11 @@ func (p *params) set(key, value string, id fileID) error {
 	default:
 		// The allowlist decides which names reach here; one this route does
 		// not read is an upstream parameter that has no upstream to go to.
-		return fmt.Errorf("%w: %q means nothing on this path — it takes file, offset, limit, grep, sheet and entry", ErrBadParams, key)
+		name := paramFile
+		if id.re == nil {
+			name = paramPath
+		}
+		return fmt.Errorf("%w: %q means nothing on this path — it takes %s, offset, limit, grep, sheet and entry", ErrBadParams, key, name)
 	}
 	return err
 }

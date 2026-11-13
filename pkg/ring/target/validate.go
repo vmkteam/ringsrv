@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"regexp"
 	"slices"
 	"sort"
@@ -17,6 +18,7 @@ import (
 	"github.com/vmkteam/ringsrv/pkg/ring"
 
 	"github.com/vmkteam/mcpkit/redact"
+	"golang.org/x/crypto/ssh"
 )
 
 // KnownTools is the closed set of tool names a role may reference. A typo in a
@@ -354,7 +356,11 @@ func (p *Profile) validate(env string) error {
 	if p.Description != "" && !strings.HasPrefix(p.Description, env+" ") {
 		errs = append(errs, fmt.Errorf("field Description must start with %q — the contour comes first", env))
 	}
-	if err := validateBaseURL(p.BaseURL); err != nil {
+	validateURL := validateBaseURL
+	if p.Store == StoreSFTP {
+		validateURL = validateSFTPURL
+	}
+	if err := validateURL(p.BaseURL); err != nil {
 		errs = append(errs, err)
 	}
 	if err := validatePathPrefix(p.PathPrefix); err != nil {
@@ -398,6 +404,7 @@ func (p *Profile) validate(env string) error {
 	errs = append(errs, p.validateQueryParams()...)
 	errs = append(errs, p.validateFiles()...)
 	errs = append(errs, p.validatePublicOnly()...)
+	errs = append(errs, p.validateStore()...)
 	if p.MaxBytes < 0 {
 		errs = append(errs, fmt.Errorf("MaxBytes %d must be >= 0", p.MaxBytes))
 	}
@@ -481,6 +488,107 @@ func compileAllowPaths(patterns, methods []string) (rules []allowRule, postBound
 		rules = append(rules, allowRule{method: method, re: re})
 	}
 	return rules, postBound, errs
+}
+
+// validateStore checks a file store: a known kind, the only thing the profile
+// does, its root, the routes it is reached by and, for SFTP, credentials that
+// parse and a host key to check the server against.
+func (p *Profile) validateStore() []error {
+	if p.Store == "" {
+		return p.noSFTPFields()
+	}
+	if p.Store != StoreWebDAV && p.Store != StoreSFTP {
+		return []error{fmt.Errorf("field Store %q: the kinds are %q and %q", p.Store, StoreWebDAV, StoreSFTP)}
+	}
+	var errs []error
+	if p.Files != "" || p.PublicOnly != "" || p.PathPrefix != "" {
+		errs = append(errs, errors.New("field Store makes the profile a file store: Files, PublicOnly and PathPrefix belong to an API and are not accepted with it"))
+	}
+	if hasNonGET(p.AllowMethods) || p.Write || p.ReadOnlyPost {
+		errs = append(errs, errors.New("field Store is read-only: AllowMethods is GET alone, without Write or ReadOnlyPost"))
+	}
+	if !p.Allows(http.MethodGet, FilesListPath) && !p.Allows(http.MethodGet, FilesReadPath) {
+		errs = append(errs, fmt.Errorf("field Store is set but AllowPaths lets neither %s nor %s through", FilesListPath, FilesReadPath))
+	}
+	// A store passes nothing on; a pattern for anything else would be a
+	// promise every call to it breaks.
+	for _, r := range p.allow {
+		if !r.re.MatchString(FilesListPath) && !r.re.MatchString(FilesReadPath) {
+			errs = append(errs, fmt.Errorf("field Store is set and AllowPaths has %q, which is neither %s nor %s — a store answers nothing else",
+				r.re.String(), FilesListPath, FilesReadPath))
+		}
+	}
+	if _, ok := p.queryRules[storePathParam]; p.QueryGuarded() && !ok {
+		errs = append(errs, fmt.Errorf("field Store is set but AllowQueryParams has no %q — no call could name a file", storePathParam))
+	}
+	if err := validateRoot(p.Root); err != nil {
+		errs = append(errs, err)
+	}
+	if p.Store == StoreWebDAV {
+		return append(errs, p.noSFTPFields()...)
+	}
+	if len(p.Headers) > 0 {
+		errs = append(errs, errors.New("an sftp store sends no headers: its credentials are SFTPUser with SFTPPassword or SFTPKey"))
+	}
+	return append(errs, p.validateSFTP()...)
+}
+
+// storePathParam is the parameter that names a file or a directory of a store.
+const storePathParam = "path"
+
+func (p *Profile) noSFTPFields() []error {
+	if p.SFTPUser != "" || p.SFTPPassword != "" || p.SFTPKey != "" || p.SFTPHostKey != "" {
+		return []error{errors.New("SFTPUser, SFTPPassword, SFTPKey and SFTPHostKey belong to Store = \"sftp\"")}
+	}
+	return nil
+}
+
+func (p *Profile) validateSFTP() []error {
+	var errs []error
+	if p.SFTPUser == "" {
+		errs = append(errs, errors.New("an sftp store needs SFTPUser"))
+	}
+	switch {
+	case (p.SFTPPassword == "") == (p.SFTPKey == ""):
+		errs = append(errs, errors.New("an sftp store needs one of SFTPPassword and SFTPKey"))
+	case p.SFTPKey != "":
+		if _, err := ssh.ParsePrivateKey([]byte(p.SFTPKey)); err != nil {
+			errs = append(errs, fmt.Errorf("SFTPKey: %w", err))
+		}
+	}
+	if p.SFTPHostKey == "" {
+		errs = append(errs, errors.New("an sftp store needs SFTPHostKey — the server's key as an authorized_keys line (ssh-keyscan): an unpinned key is a server nobody checked"))
+	} else if _, _, _, _, err := ssh.ParseAuthorizedKey([]byte(p.SFTPHostKey)); err != nil {
+		errs = append(errs, fmt.Errorf("SFTPHostKey: %w", err))
+	}
+	return errs
+}
+
+// validateRoot accepts an absolute, clean directory: what the model calls /
+// has to be one fixed place.
+func validateRoot(root string) error {
+	if root == "" {
+		return nil
+	}
+	if !strings.HasPrefix(root, "/") || path.Clean(root) != root || strings.ContainsAny(root, "\\\x00?#") {
+		return fmt.Errorf("field Root %q must be an absolute clean path: /dir[/dir…], no . or .., no trailing /", root)
+	}
+	return nil
+}
+
+// validateSFTPURL accepts sftp://host[:port] and nothing more: the user and
+// the credentials have fields of their own.
+func validateSFTPURL(raw string) error {
+	u, err := url.Parse(raw)
+	switch {
+	case err != nil:
+		return fmt.Errorf("BaseURL %q: %w", raw, err)
+	case u.Scheme != StoreSFTP || u.Host == "" || u.Hostname() == "":
+		return fmt.Errorf("BaseURL %q of an sftp store must be sftp://host[:port]", raw)
+	case u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "":
+		return fmt.Errorf("BaseURL %q must be sftp://host[:port] only: the user is SFTPUser, the directory is Root", raw)
+	}
+	return nil
 }
 
 // pathPrefixRe is a mount path: segments of letters, digits and . _ ~ -,

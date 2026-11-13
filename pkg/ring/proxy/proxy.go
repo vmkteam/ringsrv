@@ -107,8 +107,13 @@ func (p *Manager) Do(ctx context.Context, prof *target.Profile, req Request) (*A
 	}
 	// A path this server answers itself: nothing below applies to it, neither
 	// the time expansion nor the pinned parameters of an upstream call.
-	if prof.ServesFiles(req.Method, req.Path) {
+	if prof.ServesFiles(req.Method, req.Path) || prof.StoreRoute(req.Method, req.Path) != "" {
 		return p.file(ctx, prof, req)
+	}
+	// A store passes nothing on: its routes are all there is of it.
+	if prof.Store != "" {
+		return nil, &Error{Kind: FailBadArgs, Err: fmt.Errorf("a %s store answers GET %s and GET %s, nothing else",
+			prof.Store, target.FilesListPath, target.FilesReadPath)}
 	}
 
 	// A profile kept to public channels: the path's own channel is checked

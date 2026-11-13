@@ -94,6 +94,23 @@ type Profile struct {
 	// the check that it is public, then its bytes.
 	Files string
 
+	// Store makes the profile a read-only file store instead of an API: the
+	// server answers FilesListPath and FilesReadPath itself, under Root, and
+	// passes nothing on. StoreWebDAV goes through BaseURL and Headers as any
+	// call does; StoreSFTP dials BaseURL (sftp://host[:port]) with the SFTP*
+	// credentials and the pinned host key.
+	Store string
+	// Root is the directory of the store the model sees as /: a URL path on a
+	// WebDAV server, a directory on an SFTP one.
+	Root string
+	// SFTP credentials: a user, a password or a private key (PEM), and the
+	// server's host key as an authorized_keys line — required: a key that is
+	// not pinned is a server that is not checked.
+	SFTPUser     string
+	SFTPPassword string
+	SFTPKey      string
+	SFTPHostKey  string
+
 	// PublicOnly names the provider whose rules keep this profile's answers to
 	// public channels, for an upstream whose credential sees more than that:
 	// every path is checked before or after the call, and a path the rules do
@@ -214,6 +231,29 @@ func (p *Profile) Allows(method, path string) bool {
 // FilesSlack is the Files provider for Slack: files.info, then the download
 // from files.slack.com.
 const FilesSlack = "slack"
+
+// Store kinds, and the paths a store answers.
+const (
+	StoreWebDAV = "webdav"
+	StoreSFTP   = "sftp"
+	// FilesListPath lists a directory of a store, FilesReadPath shows a file.
+	FilesListPath = "/files/list"
+	FilesReadPath = "/files/read"
+)
+
+// StoreRoute is the store path a call names, empty when it names none.
+// Compared on the path as CleanPath leaves it, the string the allowlist
+// matched.
+func (p *Profile) StoreRoute(method, path string) string {
+	if p.Store == "" || !strings.EqualFold(method, http.MethodGet) {
+		return ""
+	}
+	clean, ok := upstream.CleanPath(path)
+	if !ok || clean != FilesListPath && clean != FilesReadPath {
+		return ""
+	}
+	return clean
+}
 
 // FilesMattermost is the Files provider for Mattermost: the file's info, the
 // type of its channel, then the bytes from the same API.

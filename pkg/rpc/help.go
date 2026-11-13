@@ -145,7 +145,7 @@ func (s ToolsService) servesFiles(name string) bool {
 		return false
 	}
 	p, ok := s.targets.Profile(name)
-	return ok && p.Files != ""
+	return ok && (p.Files != "" || p.Store != "")
 }
 
 // sheetNames lists what this caller may read, sorted; a write twin is not a
