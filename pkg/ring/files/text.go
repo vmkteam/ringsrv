@@ -38,20 +38,31 @@ var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 //
 // The file stays bytes throughout: of a file of megabytes only the lines that
 // go into the answer become strings.
-func textOf(meta Meta, data []byte, p params, budget int) (*Text, error) {
+func textOf(meta Meta, data []byte, p params, budget int, table bool) (*Text, error) {
 	text, encoding, err := decodeText(data)
 	if err != nil {
-		return nil, refused(CodeUnsupported, "file %s (%s) is not text: %s", meta.ID, meta.FileType, err)
+		name := meta.FileType
+		if meta.Entry != "" {
+			name = meta.Entry
+		}
+		return nil, refused(CodeUnsupported, "file %s (%s) is not text: %s", meta.ID, name, err)
 	}
-	out := &Text{Meta: meta, Encoding: encoding, TotalLines: countLines(text), Grep: p.Grep, Lines: []string{}}
-	// A table read from the middle, or through a grep, keeps its column names.
-	if isTable(meta.FileType) && out.TotalLines > 0 && (p.Offset > 0 || p.Grep != "") {
-		first, _, _ := bytes.Cut(text, []byte("\n"))
-		out.Header = cutLine(bytes.TrimSuffix(first, []byte("\r")), nil, nil)
-	}
-	room := max(budget-jsonLen(out.widest(p.Grep != ""))-textSlack, minTextBytes)
-	out.collect(text, p, room)
+	out := &Text{Meta: meta, Encoding: encoding}
+	out.fill(text, p, budget, table)
 	return out, nil
+}
+
+// fill puts the lines of text, valid UTF-8, into the answer. Whatever the
+// answer already carries counts against the budget. A table read from the
+// middle, or through a grep, keeps its column names.
+func (t *Text) fill(text []byte, p params, budget int, table bool) {
+	t.TotalLines, t.Grep, t.Lines = countLines(text), p.Grep, []string{}
+	if table && t.Header == "" && t.TotalLines > 0 && (p.Offset > 0 || p.Grep != "") {
+		first, _, _ := bytes.Cut(text, []byte("\n"))
+		t.Header = cutLine(bytes.TrimSuffix(first, []byte("\r")), nil, nil)
+	}
+	room := max(budget-jsonLen(t.widest(p.Grep != ""))-textSlack, minTextBytes)
+	t.collect(text, p, room)
 }
 
 // widest is the answer with no lines and every field set after them at its
@@ -246,10 +257,6 @@ func cutLine(line, lower, needle []byte) string {
 		fmt.Fprintf(&b, "…[+%d bytes]", len(s)-end)
 	}
 	return b.String()
-}
-
-func isTable(filetype string) bool {
-	return filetype == "csv" || filetype == "tsv"
 }
 
 // jsonLen is what v costs in the answer.

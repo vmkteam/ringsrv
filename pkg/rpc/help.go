@@ -25,10 +25,12 @@ const ToolHelp = "help"
 // in the error names only what the caller may read.
 const ErrCodeSheetUnknown = "SheetUnknown"
 
-// The two sheets that are not about a target: one per family of tools.
+// The sheets that are not about a target: one per family of tools, and one
+// for the file route every target with files shares.
 const (
-	sheetCode = "code"
-	sheetDB   = "db"
+	sheetCode  = "code"
+	sheetDB    = "db"
+	sheetFiles = "files"
 )
 
 // HelpArgs is the argument of help: names the caller already knows from the
@@ -71,7 +73,7 @@ var helpInputSchema = mcp.SchemaFor(HelpArgs{})
 // helpDescription is static on purpose: the names it would list are already
 // in the api_call description, and every byte here is paid on every request.
 func (s ToolsService) helpDescription() string {
-	return strings.ToUpper(s.env) + " · шпаргалки: пути, примеры и грабли таргетов api_call или инструментов (code, db). names — список имён за один вызов; без names — список шпаргалок. Прочитай перед первым вызовом к таргету."
+	return strings.ToUpper(s.env) + " · шпаргалки: пути, примеры и грабли таргетов api_call или инструментов (code, db, files). names — список имён за один вызов; без names — список шпаргалок. Прочитай перед первым вызовом к таргету."
 }
 
 // sheetURI maps a name the caller knows to the resource behind it. A write
@@ -79,7 +81,7 @@ func (s ToolsService) helpDescription() string {
 // targets/youtrack.md.
 func sheetURI(name string) string {
 	switch name {
-	case sheetCode, sheetDB:
+	case sheetCode, sheetDB, sheetFiles:
 		return "tools/" + name + ".md"
 	default:
 		return "targets/" + strings.TrimSuffix(name, "-rw") + ".md"
@@ -130,9 +132,20 @@ func (s ToolsService) canRead(acc target.Access, name string) bool {
 		return hasCodeTool(acc) && len(acc.Repos) > 0
 	case sheetDB:
 		return (acc.HasTool(ToolDBQuery) || acc.HasTool(ToolDBIntrospect)) && len(acc.Databases) > 0
+	case sheetFiles:
+		return acc.HasTool(ToolAPICall) && slices.ContainsFunc(acc.Targets, s.servesFiles)
 	default:
 		return acc.HasTarget(name)
 	}
+}
+
+// servesFiles says a target answers the file route.
+func (s ToolsService) servesFiles(name string) bool {
+	if s.targets == nil {
+		return false
+	}
+	p, ok := s.targets.Profile(name)
+	return ok && p.Files != ""
 }
 
 // sheetNames lists what this caller may read, sorted; a write twin is not a
@@ -148,7 +161,7 @@ func (s ToolsService) sheetNames(acc target.Access) []HelpSheet {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	for _, name := range []string{sheetCode, sheetDB} {
+	for _, name := range []string{sheetCode, sheetDB, sheetFiles} {
 		if !s.canRead(acc, name) {
 			continue
 		}

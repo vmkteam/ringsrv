@@ -140,10 +140,10 @@ func TestFetch_RefusedBeforeDownload(t *testing.T) {
 		"tombstone":           {"text/csv", "tombstone", nil, CodeUnsupported},
 		"no download link":    {"text/csv", "hosted", func(m map[string]any) { delete(m, "url_private_download") }, CodeUnsupported},
 		"too large":           {"text/csv", "hosted", func(m map[string]any) { m["size"] = maxFileBytes + 1 }, CodeTooLarge},
-		"large archive":       {"application/zip", "hosted", func(m map[string]any) { m["size"] = maxFileBytes + 1 }, CodeUnsupported},
-		"spreadsheet":         {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "hosted", nil, CodeUnsupported},
-		"archive":             {"application/zip", "hosted", nil, CodeUnsupported},
+		"large archive":       {"application/zip", "hosted", func(m map[string]any) { m["size"] = maxFileBytes + 1 }, CodeTooLarge},
+		"large pdf":           {"application/pdf", "hosted", func(m map[string]any) { m["size"] = maxFileBytes + 1 }, CodeUnsupported},
 		"pdf":                 {"application/pdf", "hosted", nil, CodeUnsupported},
+		"old excel":           {"application/vnd.ms-excel", "hosted", nil, CodeUnsupported},
 		"image, masking mode": {"image/png", "hosted", nil, ""},
 	}
 	for name, tc := range cases {
@@ -272,11 +272,11 @@ func TestFetch_GzipDownload(t *testing.T) {
 
 func TestParseParams(t *testing.T) {
 	t.Parallel()
-	p, err := parseParams("/files/download?file=F0123456789&offset=5&limit=10&grep=a%3Bb")
+	p, err := parseParams("/files/download?file=F0123456789&offset=5&limit=10&grep=a%3Bb&sheet=Лист1&entry=a%2Fb.csv", fileIDs[target.FilesSlack])
 	require.NoError(t, err)
-	assert.Equal(t, params{File: "F0123456789", Offset: 5, Limit: 10, Grep: "a;b"}, p)
+	assert.Equal(t, params{File: "F0123456789", Offset: 5, Limit: 10, Grep: "a;b", Sheet: "Лист1", Entry: "a/b.csv"}, p)
 
-	p, err = parseParams("/files/download?file=F0123456789")
+	p, err = parseParams("/files/download?file=F0123456789", fileIDs[target.FilesSlack])
 	require.NoError(t, err)
 	assert.Equal(t, defaultLimit, p.Limit)
 
@@ -290,8 +290,10 @@ func TestParseParams(t *testing.T) {
 		"/files/download?file=F0123456789&offset=-1",
 		"/files/download?file=F0123456789&grep=",
 		"/files/download?file=F0123456789&channel=C0123456789",
+		"/files/download?file=F0123456789&sheet=",
+		"/files/download?file=F0123456789&entry=",
 	} {
-		_, err := parseParams(bad)
+		_, err := parseParams(bad, fileIDs[target.FilesSlack])
 		assert.ErrorIs(t, err, ErrBadParams, bad)
 	}
 }

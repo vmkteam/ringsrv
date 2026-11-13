@@ -6,15 +6,10 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
-	"path"
 	"slices"
-	"strings"
 
 	"github.com/vmkteam/ringsrv/pkg/client/upstream"
 	"github.com/vmkteam/ringsrv/pkg/ring/target"
-
-	"github.com/vmkteam/mcpkit/mcp"
-	"github.com/vmkteam/mcpkit/redact"
 )
 
 // slackFileHost is where Slack serves file bytes. Fixed here: the download URL
@@ -49,33 +44,22 @@ type slackFile struct {
 	} `json:"shares"`
 }
 
-// slack serves a Slack file: files.info, the checks, the download.
-func (f *Fetcher) slack(ctx context.Context, prof *target.Profile, p params, budget int) (*Result, error) {
+// slack finds a Slack file: files.info, the checks, the download.
+func (f *Fetcher) slack(ctx context.Context, prof *target.Profile, p params) (source, error) {
 	t := prof.Upstream()
 	file, err := f.slackInfo(ctx, t, p.File)
 	if err != nil {
-		return nil, err
+		return source{}, err
 	}
 	meta, kind, err := checkSlackFile(file, p.File, prof.Redact)
 	if err != nil {
-		return nil, err
+		return source{}, err
 	}
 	data, err := f.slackDownload(ctx, t, file)
 	if err != nil {
-		return nil, err
+		return source{}, err
 	}
-	if kind == kindImage {
-		img, imgErr := f.picture(ctx, data)
-		if imgErr != nil {
-			return nil, imgErr
-		}
-		return &Result{Meta: meta, Image: img}, nil
-	}
-	text, err := textOf(meta, data, p, budget)
-	if err != nil {
-		return nil, err
-	}
-	return &Result{Meta: meta, Text: text}, nil
+	return source{meta: meta, kind: kind, data: data}, nil
 }
 
 func (f *Fetcher) slackInfo(ctx context.Context, t upstream.Target, id string) (slackFile, error) {
@@ -101,12 +85,6 @@ func (f *Fetcher) slackInfo(ctx context.Context, t upstream.Target, id string) (
 	return info.File, nil
 }
 
-// File kinds the route can show.
-const (
-	kindText  = "text"
-	kindImage = "image"
-)
-
 // checkSlackFile decides whether the file may be served and how, before a byte
 // of it is downloaded. The order matters: a file that is not public is refused
 // before anything about it — name, size, type — can show up in a message.
@@ -120,23 +98,13 @@ func checkSlackFile(file slackFile, id, redactMode string) (Meta, string, error)
 			"file %s is not shared in a public channel; only files of public channels are served", id)
 	}
 	meta := Meta{ID: file.ID, Name: file.Name, FileType: file.Filetype, Size: file.Size, Channels: public}
-	// What the file is comes before how big it is: an archive is refused as
-	// one, not as too large, which would read as "a smaller one would do".
-	kind := classify(file.Name, file.Mimetype, file.Mode)
-	switch {
-	case file.IsExternal, file.Mode != "hosted" && file.Mode != "snippet", file.DownloadURL == "":
+	if file.IsExternal || file.Mode != "hosted" && file.Mode != "snippet" || file.DownloadURL == "" {
 		return meta, "", refused(CodeUnsupported,
 			"file %s (%s) has no bytes this server can download: it is %s", id, file.Filetype, describeMode(file))
-	case kind == "":
-		return meta, "", refused(CodeUnsupported,
-			"file %s is %s (%s): only text and %s images are served", id, file.Filetype, file.Mimetype, imageKinds)
-	case kind == kindImage && redactMode == redact.ModeOn:
-		// A picture cannot be masked, and this target promises masking.
-		return meta, "", refused(CodeUnsupported,
-			"file %s is an image, and this target masks personal data, which a picture does not allow", id)
-	case file.Size > maxFileBytes:
-		return meta, "", refused(CodeTooLarge,
-			"file %s is %d bytes, over the %d this server downloads", id, file.Size, maxFileBytes)
+	}
+	kind := slackKind(file)
+	if err := admit(meta, kind, file.Mimetype, redactMode); err != nil {
+		return meta, "", err
 	}
 	return meta, kind, nil
 }
@@ -167,38 +135,19 @@ func describeMode(file slackFile) string {
 	}
 }
 
-// classify picks the kind of a file from what Slack says it is: a snippet is
-// always text, whatever its type. A type Slack left empty is nothing: the
-// shared check reads an empty type as text, which is for a source that has no
-// type to give.
-//
-// A file Slack did not recognise — an HTML report comes as "binary",
-// application/octet-stream — is text when its name says so. Whatever the name,
-// a NUL near the start still refuses it once the bytes are in.
-func classify(name, mimetype, mode string) string {
-	mt := mediaType(mimetype)
-	format, isImage := strings.CutPrefix(mt, "image/")
+// slackKind is the kind of a Slack file: a snippet is always text, whatever
+// its type. A type Slack left empty is nothing — the shared classify would read
+// it by the name, and Slack names the type of every file it holds. A file
+// Slack did not recognise — an HTML report comes as "binary",
+// application/octet-stream — goes by its name.
+func slackKind(file slackFile) string {
 	switch {
-	case mode == "snippet", mt == "application/x-yaml", mt != "" && mcp.IsTextualMIME(mt):
+	case file.Mode == "snippet":
 		return kindText
-	case isImage && imageFormats[format]:
-		return kindImage
-	case (mt == "" || mt == "application/octet-stream") && textExtensions[strings.ToLower(strings.TrimPrefix(path.Ext(name), "."))]:
-		return kindText
+	case file.Mimetype == "":
+		return ""
 	}
-	return ""
-}
-
-// textExtensions are the names of text files whose type Slack does not know.
-var textExtensions = map[string]bool{
-	"csv": true, "tsv": true, "txt": true, "log": true, "json": true, "yaml": true, "yml": true,
-	"md": true, "html": true, "htm": true, "xml": true, "sql": true,
-}
-
-// mediaType is a Content-Type without its parameters, lower case.
-func mediaType(contentType string) string {
-	mt, _, _ := strings.Cut(strings.ToLower(contentType), ";")
-	return strings.TrimSpace(mt)
+	return classify(file.Name, file.Mimetype)
 }
 
 // slackDownload fetches the file and checks that what came is the file: the

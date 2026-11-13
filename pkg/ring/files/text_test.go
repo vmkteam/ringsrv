@@ -91,7 +91,7 @@ func TestCutLine(t *testing.T) {
 
 func TestTextOf_BinaryRefused(t *testing.T) {
 	t.Parallel()
-	_, err := textOf(Meta{ID: "F0000000001", FileType: "text"}, []byte("a\x00b"), params{Limit: 10}, 32<<10)
+	_, err := textOf(Meta{ID: "F0000000001", FileType: "text"}, []byte("a\x00b"), params{Limit: 10}, 32<<10, false)
 	assert.Equal(t, CodeUnsupported, refusalCode(err))
 }
 
@@ -101,12 +101,12 @@ func TestTextOf_Header(t *testing.T) {
 	t.Parallel()
 	meta := Meta{ID: "F0000000001", FileType: "csv"}
 	data := []byte("a;b\n1;2\n3;4\n")
-	txt, err := textOf(meta, data, params{Offset: 1, Limit: 10}, 32<<10)
+	txt, err := textOf(meta, data, params{Offset: 1, Limit: 10}, 32<<10, isTable(meta))
 	require.NoError(t, err)
 	assert.Equal(t, "a;b", txt.Header)
 	assert.Equal(t, []string{"2: 1;2", "3: 3;4"}, txt.Lines)
 
-	txt, err = textOf(meta, data, params{Limit: 10}, 32<<10)
+	txt, err = textOf(meta, data, params{Limit: 10}, 32<<10, isTable(meta))
 	require.NoError(t, err)
 	assert.Empty(t, txt.Header)
 }
@@ -115,7 +115,7 @@ func TestTextOf_Header(t *testing.T) {
 func TestTextOf_GrepLimit(t *testing.T) {
 	t.Parallel()
 	data := []byte(strings.Repeat("hit\nmiss\n", 30))
-	txt, err := textOf(Meta{ID: "F0000000001", FileType: "text"}, data, params{Limit: 5, Grep: "HIT"}, 32<<10)
+	txt, err := textOf(Meta{ID: "F0000000001", FileType: "text"}, data, params{Limit: 5, Grep: "HIT"}, 32<<10, false)
 	require.NoError(t, err)
 	assert.Len(t, txt.Lines, 5)
 	require.NotNil(t, txt.Matched)

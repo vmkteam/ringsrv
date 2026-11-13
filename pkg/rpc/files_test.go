@@ -39,7 +39,7 @@ BaseURL          = "` + baseURL + `"
 Headers          = ["Authorization: Bearer chat-token"]
 AllowMethods     = ["GET"]
 AllowPaths       = ["^/api/conversations\\.replies$", "^/files/download$"]
-AllowQueryParams = ["channel", "ts", "file", "offset", "limit<=1000", "grep"]
+AllowQueryParams = ["channel", "ts", "file", "offset", "limit<=1000", "grep", "sheet", "entry"]
 DefaultJQ        = ".nothing"
 Files            = "slack"
 Redact           = "` + redactMode + `"
@@ -60,6 +60,7 @@ Targets     = ["chat"]
 		JQTimeout: time.Second,
 		Sessions:  ring.NewSessions(time.Hour, nil),
 		Logger:    l,
+		Docs:      testDocs(t),
 	})
 }
 
@@ -191,6 +192,39 @@ func TestFiles_NotPublicAudited(t *testing.T) {
 	assert.Equal(t, false, byIndex[1]["image"])
 }
 
+// A workbook inside an archive comes as the lines of a sheet, its PII masked
+// like any text, and the audit names the file inside as well as the archive.
+func TestFiles_ArchiveEntryAudited(t *testing.T) {
+	t.Parallel()
+	book := filestest.XLSX(t, filestest.Workbook{
+		Shared: []string{"code", "owner", "ann@example.com"},
+		Sheets: []filestest.Sheet{{Name: "Лист1", Rows: `<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row>` +
+			`<row r="2"><c r="A2"><v>809000001</v></c><c r="B2" t="s"><v>2</v></c></row>`}},
+	})
+	chat := filestest.NewSlack(t)
+	chat.Add("F0000000005", "export.zip", "zip", "application/zip", "hosted", filestest.Zip(t, filestest.Entry{Name: "owners.xlsx", Body: book}), nil)
+
+	var res mcp.ToolCallResult
+	recs := captureLog(t, func(l embedlog.Logger) {
+		var err error
+		res, err = filesService(t, chat.URL(), l).Call(ctxWithGroups("ringsrv-users"), ToolAPICall,
+			apiArgs(fileCall("/files/download?file=F0000000005&entry=owners.xlsx")))
+		require.NoError(t, err)
+	})
+	item := decodeOK(t, res)
+	data, ok := item.Data.(map[string]any)
+	require.True(t, ok, "%#v", item.Data)
+	assert.Equal(t, []any{"1: code\towner", "2: 809000001\tann@example.com"}, data["lines"])
+	assert.Equal(t, "Лист1", data["sheet"])
+	assert.Equal(t, "owners.xlsx", data["entry"])
+	assert.Equal(t, []string{"email"}, item.Redacted)
+
+	records := itemRecords(recs)
+	require.Len(t, records, 1)
+	assert.Equal(t, "export.zip", records[0]["file_name"])
+	assert.Equal(t, "owners.xlsx", records[0]["file_entry"])
+}
+
 // The picture ceiling counts bytes as well as pictures: past 3 MB of them the
 // next one is dropped, however few came before.
 func TestAttachImages_ByteCeiling(t *testing.T) {
@@ -255,4 +289,24 @@ func TestFiles_TextMasked(t *testing.T) {
 	item := decodeOK(t, res)
 	assert.NotContains(t, res.Content[0].Text, "ann@example.com")
 	assert.Equal(t, []string{"email"}, item.Redacted)
+}
+
+// The file route's sheet is listed for a role that has a target serving it,
+// and read like any other.
+func TestFiles_HelpSheet(t *testing.T) {
+	t.Parallel()
+	chat := filestest.NewSlack(t)
+	s := filesService(t, chat.URL(), embedlog.Logger{})
+
+	res, err := s.Call(ctxWithGroups("ringsrv-users"), ToolHelp, nil)
+	require.NoError(t, err)
+	assert.Contains(t, sheetNamesOf(decodeHelp(t, res)), "files")
+
+	res, err = s.Call(ctxWithGroups("ringsrv-users"), ToolHelp, map[string]any{"names": []any{"files"}})
+	require.NoError(t, err)
+	out := decodeHelp(t, res)
+	require.Len(t, out.Results, 1)
+	require.Nil(t, out.Results[0].Error)
+	assert.Contains(t, out.Results[0].Text, "/files/download")
+	assert.Contains(t, out.Results[0].Text, "UnsupportedFileType")
 }

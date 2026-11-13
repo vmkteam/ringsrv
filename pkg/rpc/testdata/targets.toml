@@ -125,7 +125,7 @@ AllowPaths         = [
   "^/api/users\\.info$",
   "^/files/download$",
 ]
-AllowQueryParams   = ["query", "after", "before", "channel", "ts", "oldest", "latest", "limit<=1000", "cursor", "user", "types", "sort", "sort_dir", "inclusive", "highlight", "file", "offset", "grep"]
+AllowQueryParams   = ["query", "after", "before", "channel", "ts", "oldest", "latest", "limit<=1000", "cursor", "user", "types", "sort", "sort_dir", "inclusive", "highlight", "file", "offset", "grep", "sheet", "entry"]
 TimeParams         = ["oldest", "latest", "after", "before"]
 TimeFormat         = "unix"
 Files              = "slack"

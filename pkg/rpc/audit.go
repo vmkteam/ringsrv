@@ -116,6 +116,9 @@ func (r auditRecord) core() audit.Record {
 			"file_channels", strings.Join(f.Channels, ","),
 			"image", r.Image,
 		)
+		if f.Entry != "" {
+			out.Extra = append(out.Extra, "file_entry", r.maskForLog(f.Entry))
+		}
 	}
 	return out
 }

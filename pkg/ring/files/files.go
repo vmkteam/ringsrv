@@ -2,7 +2,12 @@
 // The model names a file by its id; the file is looked up through the
 // upstream's own API, refused unless it is public and of a kind this server can
 // show, downloaded from the host the provider pins, and handed back as
-// numbered lines or as an image.
+// numbered lines or as an image. A spreadsheet comes as the lines of one sheet,
+// an archive as its table of contents or as one of its files, shown the same
+// way.
+//
+// A provider finds and checks the file and hands over its bytes (source); how
+// the bytes are shown does not depend on where they came from (render).
 //
 // The lookup's answer never reaches the model as it came: with the scope the
 // lookup needs, the upstream describes files from private channels and direct
@@ -67,6 +72,9 @@ type Meta struct {
 	FileType string   `json:"filetype"`
 	Size     int64    `json:"size"`
 	Channels []string `json:"channels"`
+	// Entry is the file inside an archive that was shown, when the file is
+	// one and a file of it was asked for.
+	Entry string `json:"entry,omitempty"`
 }
 
 // Text is a text file as numbered lines, the way code_read numbers them.
@@ -74,7 +82,13 @@ type Text struct {
 	Meta
 	// Encoding is set when the file was not UTF-8 and was decoded from it.
 	Encoding string `json:"encoding,omitempty"`
-	// Header is line 1 of a table when the lines below do not include it.
+	// Sheet is the sheet of a workbook the lines are from; Sheets names all
+	// of its sheets, in their order.
+	Sheet  string   `json:"sheet,omitempty"`
+	Sheets []string `json:"sheets,omitempty"`
+	// Header is the column names of a table when the lines below do not
+	// include them: line 1 of a table read from the middle or through grep,
+	// and always for an archive's table of contents.
 	Header     string `json:"header,omitempty"`
 	TotalLines int    `json:"total_lines"`
 	LineFrom   int    `json:"line_from,omitempty"`
@@ -126,15 +140,21 @@ func NewFetcher(client *upstream.Client) *Fetcher {
 // Fetch serves one call of the route. budget is the size the text answer has
 // to fit in, envelope included.
 func (f *Fetcher) Fetch(ctx context.Context, prof *target.Profile, rawPath string, budget int) (*Result, error) {
-	p, err := parseParams(rawPath)
-	if err != nil {
-		return nil, err
-	}
+	var load func(context.Context, *target.Profile, params) (source, error)
 	switch prof.Files {
 	case target.FilesSlack:
-		return f.slack(ctx, prof, p, budget)
+		load = f.slack
 	default:
 		// The catalogue refuses an unknown provider at load time.
 		return nil, fmt.Errorf("files: profile %q names no provider this server knows", prof.Name())
 	}
+	p, err := parseParams(rawPath, fileIDs[prof.Files])
+	if err != nil {
+		return nil, err
+	}
+	src, err := load(ctx, prof, p)
+	if err != nil {
+		return nil, err
+	}
+	return f.render(ctx, src, p, budget, prof.Redact)
 }
