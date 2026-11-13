@@ -29,7 +29,7 @@ def person: {id, username, first_name, last_name, nickname, position, is_bot} | 
 def channel: {id, name, display_name, type, team_id, purpose, header, delete_at} | clean;
 def team: {id, name, display_name, description, type, delete_at} | clean;
 if type == "object" and has("posts") and has("order") then
-  {posts: [.order[] as $id | .posts[$id] | select(. != null) | post], has_next, next_post_id, prev_post_id} | clean
+  {posts: [.order[]? as $id | .posts[$id] | select(. != null) | post]} + ({has_next, next_post_id, prev_post_id} | clean)
 elif type == "object" and has("file_infos") then
   {files: [.order[]? as $id | .file_infos[$id] | select(. != null) | {id, name, extension, size, channel_id, post_id}]}
 elif type == "object" and has("message") and has("channel_id") then post

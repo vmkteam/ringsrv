@@ -100,6 +100,9 @@ func TestMattermostDefaultJQ(t *testing.T) {
 		map[string]any{"id": "a", "channel_id": "c", "user_id": "u", "create_at": 1.0, "message": "root", "reply_count": 1.0},
 	}, "has_next": false}, list, "posts in order, empty fields dropped, a bot's attachments kept")
 
+	empty := shape(`{"order":[],"posts":{},"next_post_id":"","prev_post_id":"","matches":{}}`)
+	assert.Equal(t, map[string]any{"posts": []any{}}, empty, "a search that found nothing public says so")
+
 	person := shape(`{"id":"u","username":"ann","first_name":"Ann","last_name":"","email":"ann@example.com","notify_props":{"x":"y"},"is_bot":false}`)
 	assert.Equal(t, map[string]any{"id": "u", "username": "ann", "first_name": "Ann", "is_bot": false}, person)
 
