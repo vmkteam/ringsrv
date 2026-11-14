@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vmkteam/ringsrv/pkg/ring/dbq"
@@ -227,7 +229,7 @@ func (s ToolsService) dbToolsVisible(acc target.Access, tool string) bool {
 // rules its catalogue entry carries.
 func (s ToolsService) dbQueryDescription(acc target.Access) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s · readonly SQL к базе из списка; диалект — по базе. queries — до %d запросов к одной базе подряд; после первой ошибки остальные skipped. Один запрос — список из одного.\n\nБазы:\n",
+	fmt.Fprintf(&b, "%s · readonly SQL к базе из списка; диалект — по базе. queries — до %d запросов к одной базе, выполняются параллельно; после первой ошибки ещё не начатые — skipped. Один запрос — список из одного.\n\nБазы:\n",
 		strings.ToUpper(s.env), maxDBQueryBatch)
 	for _, name := range acc.Databases {
 		d, ok := s.targets.Database(name)
@@ -326,24 +328,59 @@ func (s ToolsService) callDBQuery(ctx context.Context, arguments map[string]any)
 		rec.DenyReason = ErrCodeBadArgs
 		return errResult(ToolError{Code: ErrCodeBadArgs, Message: "invalid arguments: " + err.Error(), Env: s.env})
 	}
-	out := DBQueryBatch{Env: s.env, Driver: d.Driver, TraceID: rec.TraceID, Results: make([]DBQueryItem, len(args.Queries))}
-	for i, q := range args.Queries {
-		out.Results[i] = s.oneDBQuery(ctx, args, q, i, rec)
-		if out.Results[i].Error != nil {
-			// The tail is not run: continuing one line of reasoning after the
-			// premise failed costs the database work nobody will use.
-			for j := i + 1; j < len(args.Queries); j++ {
-				out.Results[j] = DBQueryItem{Index: j, Skipped: true}
-			}
-			break
-		}
-	}
+	out := DBQueryBatch{Env: s.env, Driver: d.Driver, TraceID: rec.TraceID}
+	out.Results = s.runQueries(ctx, args, rec)
 	out.Budget = budgetOf(ctx)
 
 	rec.Decision, rec.DenyReason = audit.DecisionAllow, ""
 	res := okResultJSON(out, s.env)
 	rec.BytesOut = res.Size()
 	return res
+}
+
+// runQueries runs the statements of one call as many at once as the base has
+// connections, and no more: a batch wider than the pool would queue behind
+// itself. They start in the order sent — an earlier statement is never left
+// out for a later one — and once one fails, those not yet started are not
+// started: continuing one line of reasoning after its premise failed costs the
+// database work nobody will use. One already running is let finish; cancelling
+// it would cost the same and answer less.
+func (s ToolsService) runQueries(ctx context.Context, args DBQueryArgs, rec *auditRecord) []DBQueryItem {
+	out := make([]DBQueryItem, len(args.Queries))
+	slots := make(chan struct{}, max(1, min(len(args.Queries), s.db.Width(args.Target))))
+	var (
+		failed atomic.Bool
+		wg     sync.WaitGroup
+	)
+	for i, q := range args.Queries {
+		slots <- struct{}{}
+		if failed.Load() {
+			<-slots
+			out[i] = DBQueryItem{Index: i, Skipped: true}
+			continue
+		}
+		wg.Go(func() {
+			// Released last: the failure is recorded before the next statement
+			// may look at it.
+			defer func() { <-slots }()
+			// The request middleware recovers the goroutine it serves on, and
+			// this is not that goroutine.
+			defer func() {
+				if p := recover(); p != nil {
+					failed.Store(true)
+					out[i] = DBQueryItem{Index: i, Error: &ToolError{Code: ErrCodeUpstream, Message: fmt.Sprintf("internal error: %v", p)}}
+				}
+			}()
+			item := s.oneDBQuery(ctx, args, q, i, rec)
+			if item.Error != nil {
+				failed.Store(true)
+			}
+			// Each goroutine owns out[i]: no two indices overlap, no lock.
+			out[i] = item
+		})
+	}
+	wg.Wait()
+	return out
 }
 
 // auditRefusedQueries writes one record per statement of a batch that was
@@ -372,15 +409,25 @@ func (s ToolsService) oneDBQuery(ctx context.Context, args DBQueryArgs, q DBQuer
 		SQL: q.SQL, MaxRows: q.MaxRows, JQ: q.JQ, MaxBytes: args.MaxBytes, Caller: caller,
 	})
 	// Each statement is billed on its own: a batch that ran five did five
-	// statements' worth of work, whatever the wall clock says. The label is the
-	// database dbTarget resolved before the batch ran, never the caller's word.
-	ratelimit.ChargeFor(ctx, args.Target, time.Since(started))
+	// statements' worth of work, whatever the wall clock says. The time it
+	// queued for a connection is not work and not the caller's to pay for. The
+	// label is the database dbTarget resolved before the batch ran, never the
+	// caller's word.
+	var waited time.Duration
+	switch {
+	case ferr != nil:
+		waited = ferr.Waited
+	case answer != nil:
+		waited = answer.Waited
+	}
+	spent := time.Since(started) - waited
+	ratelimit.ChargeFor(ctx, args.Target, spent)
 	if ferr != nil {
 		terr := s.dbError(ctx, ToolDBQuery, args.Target, ferr, rec)
-		observeDBQuery(args.Target, time.Since(started), outcomeOf(terr.Code))
+		observeDBQuery(args.Target, spent, outcomeOf(terr.Code))
 		return DBQueryItem{Index: index, Error: terr}
 	}
-	observeDBQuery(args.Target, time.Since(started), outcomeOK)
+	observeDBQuery(args.Target, spent, outcomeOK)
 
 	observe(ToolDBQuery, args.Target, outcomeOK)
 	observeRedactions(args.Target, answer.Redacted)

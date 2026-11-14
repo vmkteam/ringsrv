@@ -340,14 +340,35 @@ func TestBatch_RunsInParallelWithinLimit(t *testing.T) {
 	assert.Less(t, elapsed, 8*30*time.Millisecond, "which is the whole point: eight sequential calls would take longer")
 }
 
+// withPGWidth rebuilds the fixture's pg target with a pool of width: how many
+// statements of one db_query run at once.
+func (f *dbFixture) withPGWidth(t *testing.T, width int) {
+	t.Helper()
+	m := dbq.NewManager(dbq.Options{JQTimeout: time.Second, MaxBytes: 1 << 20, RetryAfter: time.Millisecond})
+	require.NoError(t, m.Add(dbq.Target{
+		Name: "pg", Driver: target.DriverPostgres, Client: f.pg, MaxRows: 200, Timeout: time.Second,
+		Redact: "warn", RedactRules: []string{"email"}, Password: "s3cret-pw",
+		Database: "app", Schemas: []string{"public", "billing", "audit"}, MaxConcurrent: width,
+	}))
+	require.NoError(t, m.Prove(t.Context()))
+	f.m = m
+	f.ToolsService = NewToolsService(ToolsDeps{
+		Targets: f.targets, DB: m, JQTimeout: time.Second, MaxBytes: 1 << 20,
+		Docs: testDocs(t), Sessions: ring.NewSessions(time.Hour, nil), Logger: embedlog.Logger{},
+	})
+}
+
 // db_query stops at the first failure: a list of statements is usually one line
 // of reasoning, and continuing after the premise failed costs work nobody uses.
+// On a pool of one the list runs in order, and the tail is never started.
 func TestBatch_DBQueryStopsAtFirstError(t *testing.T) {
 	t.Parallel()
 	f := newDBFixture(t, embedlog.Logger{})
+	f.withPGWidth(t, 1)
 	var ran atomic.Int64
 	f.pg.SetQuery(func(st dbq.Statement) (*dbq.Result, error) {
-		if n := ran.Add(1); n == 2 {
+		ran.Add(1)
+		if strings.Contains(st.SQL, "nmae") {
 			return nil, errors.New(`ERROR #42703 column "nmae" does not exist`)
 		}
 		return dbqtest.Rows(1)(st)
@@ -619,4 +640,67 @@ func TestBatch_MetricCountsRefusedCalls(t *testing.T) {
 
 	assert.Equal(t, before.count+2, after.count, "an empty list and an oversized one are still tool calls")
 	assert.InDelta(t, before.sum+float64(maxAPICallBatch+1), after.sum, 0.001)
+}
+
+// On a wider pool the list runs in parallel. A failure stops what has not
+// started; what is already running finishes and answers.
+func TestBatch_DBQueryParallel(t *testing.T) {
+	t.Parallel()
+	f := newDBFixture(t, embedlog.Logger{})
+	f.withPGWidth(t, 2)
+	var ran atomic.Int64
+	f.pg.SetQuery(func(st dbq.Statement) (*dbq.Result, error) {
+		ran.Add(1)
+		switch {
+		case strings.Contains(st.SQL, "slow"):
+			time.Sleep(150 * time.Millisecond)
+		case strings.Contains(st.SQL, "nmae"):
+			return nil, errors.New(`ERROR #42703 column "nmae" does not exist`)
+		}
+		return dbqtest.Rows(1)(st)
+	})
+
+	res, err := f.Call(ctxWithGroups("pg-readers"), ToolDBQuery, map[string]any{
+		"target": "pg",
+		"queries": []any{
+			map[string]any{"sql": "SELECT 'slow'"},
+			map[string]any{"sql": "SELECT nmae FROM users"},
+			map[string]any{"sql": "SELECT 3"},
+		},
+	})
+	require.NoError(t, err)
+	out := decodeText[DBQueryBatch](t, res)
+	require.Len(t, out.Results, 3)
+	assert.Nil(t, out.Results[0].Error, "the statement already running finished and answered")
+	assert.Equal(t, 1, out.Results[0].RowsReturned, "%+v", out.Results)
+	require.NotNil(t, out.Results[1].Error)
+	assert.True(t, out.Results[2].Skipped, "the one not started is not started")
+	assert.EqualValues(t, 2, ran.Load())
+
+	// Two independent statements are in flight at once: each waits for the
+	// other to arrive. Run one after another, the first would wait alone and
+	// give up — no wall clock to race on a loaded runner.
+	var arrived sync.WaitGroup
+	arrived.Add(2)
+	both := make(chan struct{})
+	go func() { arrived.Wait(); close(both) }()
+	var together atomic.Int64
+	f.pg.SetQuery(func(st dbq.Statement) (*dbq.Result, error) {
+		arrived.Done()
+		select {
+		case <-both:
+			together.Add(1)
+		case <-time.After(2 * time.Second):
+		}
+		return dbqtest.Rows(1)(st)
+	})
+	res, err = f.Call(ctxWithGroups("pg-readers"), ToolDBQuery, map[string]any{
+		"target":  "pg",
+		"queries": []any{map[string]any{"sql": "SELECT 1"}, map[string]any{"sql": "SELECT 2"}},
+	})
+	require.NoError(t, err)
+	assert.EqualValues(t, 2, together.Load(), "both statements were in flight at once")
+	for _, item := range decodeText[DBQueryBatch](t, res).Results {
+		assert.Nil(t, item.Error)
+	}
 }

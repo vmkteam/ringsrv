@@ -33,6 +33,9 @@ type Client struct {
 	// empty list explained without one.
 	VisibleScope dbq.Scope
 	ScopeErr     error
+	// deadlines is how much time each query had left when it reached the
+	// client: what a test reads to see where the clock started.
+	deadlines []time.Duration
 }
 
 // New makes a client that proves read-only and answers queries with fn.
@@ -54,6 +57,14 @@ func (c *Client) SetQuery(fn func(req dbq.Statement) (*dbq.Result, error)) {
 	c.query = fn
 }
 
+// Deadlines is how much time each query had left when it reached the client,
+// in the order they arrived.
+func (c *Client) Deadlines() []time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]time.Duration(nil), c.deadlines...)
+}
+
 // Proves is how many times the probe ran.
 func (c *Client) Proves() int {
 	c.mu.Lock()
@@ -61,9 +72,12 @@ func (c *Client) Proves() int {
 	return c.proves
 }
 
-func (c *Client) Query(_ context.Context, req dbq.Statement) (*dbq.Result, error) {
+func (c *Client) Query(ctx context.Context, req dbq.Statement) (*dbq.Result, error) {
 	c.mu.Lock()
 	fn := c.query
+	if dl, ok := ctx.Deadline(); ok {
+		c.deadlines = append(c.deadlines, time.Until(dl))
+	}
 	c.mu.Unlock()
 	if fn == nil {
 		return &dbq.Result{Rows: [][]any{}}, nil
