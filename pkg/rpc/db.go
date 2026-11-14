@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/vmkteam/ringsrv/pkg/ring/dbq"
+	"github.com/vmkteam/ringsrv/pkg/ring/kb"
 	"github.com/vmkteam/ringsrv/pkg/ring/target"
 
 	"github.com/vmkteam/mcpkit/audit"
@@ -109,6 +110,10 @@ type DBTable struct {
 	Kind         string `json:"kind"`
 	RowsEstimate int64  `json:"rows_estimate"`
 	Comment      string `json:"comment,omitempty"`
+	// Purpose is the knowledge pack's line on the table, given when the
+	// database has no comment of its own; Doc names the note for help.
+	Purpose string `json:"purpose,omitempty"`
+	Doc     string `json:"doc,omitempty"`
 }
 
 // DBSchemaBatch is db_introspect with tables: one schema per name, in the order
@@ -146,6 +151,32 @@ type DBSchemaResult struct {
 	// Code points at the repository whose db layer describes these tables: the
 	// enums live there, not in the database.
 	Code *DBCode `json:"code,omitempty"`
+	// Doc is the knowledge pack's note on the table: what it is for and what
+	// one row is. The database knows the shape, the note the meaning — and a
+	// note can go stale, which is why it never overwrites a field the database
+	// reported.
+	Doc *DBDoc `json:"doc,omitempty"`
+}
+
+// DBDoc is the note on a table from the knowledge pack.
+type DBDoc struct {
+	// Topic is the full text of the note, through help.
+	Topic     string   `json:"topic"`
+	Purpose   string   `json:"purpose,omitempty"`
+	Grain     string   `json:"grain,omitempty"`
+	Notes     []string `json:"notes,omitempty"`
+	Relations []string `json:"relations,omitempty"`
+	// Unmatched names the columns the note describes and the table does not
+	// have: a column renamed by a migration keeps its description under the old
+	// name, and the model should see the two disagree.
+	Unmatched []string `json:"unmatched,omitempty"`
+}
+
+// DBColumnDoc is the note on one column.
+type DBColumnDoc struct {
+	Description string   `json:"description,omitempty"`
+	Enum        []string `json:"enum,omitempty"`
+	Rel         string   `json:"rel,omitempty"`
 }
 
 // DBColumn is one column of a table.
@@ -155,6 +186,9 @@ type DBColumn struct {
 	Nullable bool     `json:"nullable"`
 	Comment  string   `json:"comment,omitempty"`
 	Enum     []string `json:"enum,omitempty"`
+	// Doc is the knowledge pack's note on the column, beside what the database
+	// said rather than over it.
+	Doc *DBColumnDoc `json:"doc,omitempty"`
 }
 
 // DBRelation is a foreign key.
@@ -420,7 +454,7 @@ func (s ToolsService) dbTableList(ctx context.Context, d *target.Database, name 
 		e.Env = s.env
 		return errResult(e)
 	}
-	out := s.newTablesResult(d, tables)
+	out := s.newTablesResult(d, name, tables)
 	if len(tables) == 0 {
 		s.explainEmpty(ctx, name, &out)
 	}
@@ -444,11 +478,11 @@ func (s ToolsService) oneDBSchema(ctx context.Context, d *target.Database, args 
 	}
 	observe(ToolDBIntrospect, args.Target, outcomeOK)
 	rec.Decision, rec.DenyReason = audit.DecisionAllow, ""
-	out := s.newSchemaResult(d, schema)
+	out := s.newSchemaResult(d, args.Target, schema)
 	return DBSchemaItem{Index: index, Table: table, Schema: &out}
 }
 
-func (s ToolsService) newTablesResult(d *target.Database, tables []dbq.Table) DBTablesResult {
+func (s ToolsService) newTablesResult(d *target.Database, name string, tables []dbq.Table) DBTablesResult {
 	// Schemas is what the catalogue wrote down — the default included — and
 	// empty for a driver without schemas.
 	out := DBTablesResult{
@@ -457,8 +491,42 @@ func (s ToolsService) newTablesResult(d *target.Database, tables []dbq.Table) DB
 	}
 	for i, t := range tables {
 		out.Tables[i] = DBTable{Schema: t.Schema, Name: t.Name, Kind: t.Kind, RowsEstimate: t.RowsEstimate, Comment: t.Comment}
+		if note, ok := s.tableNote(name, t.Schema, t.Name); ok {
+			out.Tables[i].Doc = note.Topic
+			if t.Comment == "" {
+				out.Tables[i].Purpose = note.Purpose
+			}
+		}
 	}
 	return out
+}
+
+// tableNote finds the knowledge pack's note on a table of a target. The name
+// is qualified with the schema it was found in, so that a base with two tables
+// of one name in two schemas gets the right note or none.
+func (s ToolsService) tableNote(target, schema, table string) (*kb.Table, bool) {
+	if s.kb == nil {
+		return nil, false
+	}
+	if schema != "" && !strings.Contains(table, ".") {
+		table = schema + "." + table
+	}
+	return s.kb.Annotation(target, table)
+}
+
+// attachDoc puts the note on a table beside its schema, column by column.
+func attachDoc(out *DBSchemaResult, note *kb.Table) {
+	names := make([]string, len(out.Columns))
+	for i := range out.Columns {
+		names[i] = out.Columns[i].Name
+		if c, ok := note.Column(out.Columns[i].Name); ok {
+			out.Columns[i].Doc = &DBColumnDoc{Description: c.Description, Enum: c.Enum, Rel: c.Rel}
+		}
+	}
+	out.Doc = &DBDoc{
+		Topic: note.Topic, Purpose: note.Purpose, Grain: note.Grain,
+		Notes: note.Notes, Relations: note.Relations, Unmatched: note.Unmatched(names),
+	}
 }
 
 // explainEmpty asks the server what this role can see and turns the answer into
@@ -476,7 +544,7 @@ func (s ToolsService) explainEmpty(ctx context.Context, name string, out *DBTabl
 
 // newSchemaResult maps the domain's schema and attaches the pointer to the code:
 // the layer from the catalogue and the search that finds the model.
-func (s ToolsService) newSchemaResult(d *target.Database, schema *dbq.Schema) DBSchemaResult {
+func (s ToolsService) newSchemaResult(d *target.Database, name string, schema *dbq.Schema) DBSchemaResult {
 	out := DBSchemaResult{
 		Table: schema.Table, Comment: schema.Comment,
 		Columns: make([]DBColumn, len(schema.Columns)), PrimaryKey: schema.PrimaryKey,
@@ -500,6 +568,9 @@ func (s ToolsService) newSchemaResult(d *target.Database, schema *dbq.Schema) DB
 		for i, r := range refs {
 			out.Code.Repos[i] = DBCodeRepo{Repo: r.Repo, Layer: r.Layer}
 		}
+	}
+	if note, ok := s.tableNote(name, schema.Schema, schema.Table); ok {
+		attachDoc(&out, note)
 	}
 	return out
 }

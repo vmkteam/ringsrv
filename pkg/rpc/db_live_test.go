@@ -14,6 +14,7 @@ import (
 	"github.com/vmkteam/ringsrv/pkg/db"
 	"github.com/vmkteam/ringsrv/pkg/ring"
 	"github.com/vmkteam/ringsrv/pkg/ring/dbq"
+	"github.com/vmkteam/ringsrv/pkg/ring/kb"
 	"github.com/vmkteam/ringsrv/pkg/ring/md"
 	"github.com/vmkteam/ringsrv/pkg/ring/target"
 
@@ -42,16 +43,18 @@ func TestDBQuery_Live(t *testing.T) {
 	// table the fixture left behind.
 	type stand struct {
 		name, driver, addr, table string
-		client                    dbq.Client
-		extra                     string
-		schemas                   []string
+		// column is one the note describes, on the table the fixture made.
+		column  string
+		client  dbq.Client
+		extra   string
+		schemas []string
 	}
 	var stands []stand
 	if pgDSN != "" {
 		opts, err := pg.ParseURL(pgDSN)
 		require.NoError(t, err)
 		stands = append(stands, stand{
-			name: "pg", driver: target.DriverPostgres, addr: opts.Addr, table: "users",
+			name: "pg", driver: target.DriverPostgres, addr: opts.Addr, table: "users", column: "email",
 			client: db.New(db.Options{
 				Addr: opts.Addr, Database: opts.Database, User: "ringsrv_test_ro", Password: "ringsrv_test",
 				Timeout: 2 * time.Second, Schemas: []string{"ringsrv_test"}, AppName: "ringsrv-test",
@@ -65,7 +68,7 @@ func TestDBQuery_Live(t *testing.T) {
 		require.NoError(t, err)
 		c, err := chdb.New(chdb.Options{Addr: opts.Addr[0], Database: "ringsrv_test", User: "ringsrv_test_ro", Password: "ringsrv_test", Timeout: 2 * time.Second})
 		require.NoError(t, err)
-		stands = append(stands, stand{name: "ch", driver: target.DriverClickHouse, addr: opts.Addr[0], table: "events", client: c})
+		stands = append(stands, stand{name: "ch", driver: target.DriverClickHouse, addr: opts.Addr[0], table: "events", column: "kind", client: c})
 	}
 
 	var toml strings.Builder
@@ -107,8 +110,20 @@ Targets     = [`)
 
 	lib, err := doc.Load(md.FS, md.Root, doc.Options{URIScheme: md.URIScheme})
 	require.NoError(t, err)
+	// A note on each stand's table, and a decoy beside it: a note on a table
+	// of the same name in another schema, which must not be taken for it.
+	files, sources := map[string]string{}, map[string]string{}
+	for _, st := range stands {
+		sources[st.name] = st.name
+		files["schema/"+st.name+"/"+st.table+".md"] = fmt.Sprintf("---\ntable: %s\nsource: %s\npurpose: \"Из пакета: %s\"\ncolumns:\n"+
+			"  - name: %s\n    description: \"Из пакета: %s\"\n  - name: ghost\n    description: Колонка, которой в таблице нет\n---\n",
+			st.table, st.name, st.table, st.column, st.column)
+		files["schema/"+st.name+"/elsewhere_"+st.table+".md"] = fmt.Sprintf("---\ntable: elsewhere.%s\nsource: %s\npurpose: Таблица другой схемы\n---\n", st.table, st.name)
+	}
+	pack, err := kb.Load(kb.Options{Dir: writeKB(t, files), URIScheme: kbScheme, Sources: sources}, kb.Deps{Catalog: cat, ReservedTopics: ReservedSheetNames(cat)})
+	require.NoError(t, err)
 	srv := mcpkit.NewServer(NewMCP(MCPDeps{
-		Info: mcp.ServerInfo{Name: "ringsrv", Version: "test"}, Docs: lib, Targets: cat, DB: m,
+		Info: mcp.ServerInfo{Name: "ringsrv", Version: "test"}, Docs: lib, KB: pack, Targets: cat, DB: m,
 		JQTimeout: time.Second, MaxBytes: 1 << 20, Sessions: ring.NewSessions(time.Hour, nil),
 		Logger: embedlog.Logger{}, IsDevel: true,
 	}), embedlog.Logger{})
@@ -140,22 +155,69 @@ Targets     = [`)
 	for _, st := range stands {
 		t.Run(st.name, func(t *testing.T) {
 			n, table := st.name, st.table
+			topic := "schema/" + n + "/" + table
+
+			// The list names the note of the table the server reported, under
+			// the schema the driver put it in.
 			tables := callTool(t, ToolDBIntrospect, map[string]any{"target": n})
-			assert.NotEmpty(t, tables["tables"])
+			list, ok := tables["tables"].([]any)
+			require.True(t, ok, "%v", tables)
+			var listed map[string]any
+			for _, it := range list {
+				if row, _ := it.(map[string]any); row["name"] == table {
+					listed = row
+				}
+			}
+			require.NotNil(t, listed, "%s is in the list", table)
+			assert.Equal(t, topic, listed["doc"], "the list names the note")
 
-			schema := callTool(t, ToolDBIntrospect, map[string]any{"target": n, "table": table})
+			batch := callTool(t, ToolDBIntrospect, map[string]any{"target": n, "tables": []any{table}})
+			assert.Equal(t, "dev", batch["env"])
+			schema, ok := liveItem(t, batch)["schema"].(map[string]any)
+			require.True(t, ok, "%v", batch)
 			assert.NotEmpty(t, schema["columns"])
-			assert.Equal(t, "dev", schema["env"])
 
-			out := callTool(t, ToolDBQuery, map[string]any{"target": n, "sql": "SELECT id FROM " + table + " ORDER BY id", "max_rows": 1})
+			// The note beside the base's own schema: the pack's meaning, the
+			// columns it names and the table lacks, and the base's comment kept.
+			note, ok := schema["doc"].(map[string]any)
+			require.True(t, ok, "the note is merged: %v", schema)
+			assert.Equal(t, topic, note["topic"])
+			assert.Equal(t, "Из пакета: "+table, note["purpose"])
+			assert.Equal(t, []any{"ghost"}, note["unmatched"], "a described column the live table lacks is named")
+			assert.NotEmpty(t, schema["comment"], "the base's own comment stays")
+			var described map[string]any
+			for _, c := range schema["columns"].([]any) {
+				if col, _ := c.(map[string]any); col["name"] == st.column {
+					described, _ = col["doc"].(map[string]any)
+				}
+			}
+			require.NotNil(t, described, "column %s carries its note", st.column)
+			assert.Equal(t, "Из пакета: "+st.column, described["description"])
+
+			out := callTool(t, ToolDBQuery, map[string]any{"target": n, "queries": []any{
+				map[string]any{"sql": "SELECT id FROM " + table + " ORDER BY id", "max_rows": 1},
+			}})
 			assert.Equal(t, "dev", out["env"])
 			assert.Contains(t, []any{"postgres", "clickhouse"}, out["driver"])
-			assert.Equal(t, true, out["truncated"], "two rows in the fixture, one asked for")
-			assert.EqualValues(t, 1, out["rows_returned"])
-			data, ok := out["data"].(map[string]any)
+			item := liveItem(t, out)
+			assert.Equal(t, true, item["truncated"], "two rows in the fixture, one asked for")
+			assert.EqualValues(t, 1, item["rows_returned"])
+			data, ok := item["data"].(map[string]any)
 			require.True(t, ok)
 			assert.Len(t, data["rows"], 1)
 			assert.NotEmpty(t, data["columns"])
 		})
 	}
+}
+
+// liveItem is the one result of a batch of one, which has to have answered.
+func liveItem(t *testing.T, batch map[string]any) map[string]any {
+	t.Helper()
+	results, ok := batch["results"].([]any)
+	require.True(t, ok, "%v", batch)
+	require.Len(t, results, 1)
+	item, ok := results[0].(map[string]any)
+	require.True(t, ok)
+	require.Nil(t, item["error"], "%v", item["error"])
+	return item
 }

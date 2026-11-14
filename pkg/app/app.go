@@ -14,6 +14,7 @@ import (
 	"github.com/vmkteam/ringsrv/pkg/client/upstream"
 	"github.com/vmkteam/ringsrv/pkg/ring"
 	"github.com/vmkteam/ringsrv/pkg/ring/dbq"
+	"github.com/vmkteam/ringsrv/pkg/ring/kb"
 	"github.com/vmkteam/ringsrv/pkg/ring/md"
 	"github.com/vmkteam/ringsrv/pkg/ring/target"
 	"github.com/vmkteam/ringsrv/pkg/rpc"
@@ -98,6 +99,21 @@ type Config struct {
 		DBTimeout time.Duration
 		DBMaxRows int
 	}
+	// Knowledge is the pack this instance serves beside its tools: rules of the
+	// domain, notes on tables, prompts, its own instructions. An empty Dir is an
+	// instance without one, the same as before the pack existed.
+	Knowledge struct {
+		Dir string
+		// URIScheme names the pack's resources; the links inside its texts
+		// are written with it.
+		URIScheme string
+		// FoldOver is the size above which a directory is one row of help();
+		// zero takes kb.DefaultFoldOver.
+		FoldOver int
+		// Sources maps the source a table note names onto a [Databases.*]
+		// target of the catalogue.
+		Sources map[string]string
+	}
 	RateLimit ratelimit.Config
 	APIKeys   []auth.Key
 }
@@ -111,6 +127,7 @@ type App struct {
 	verifier  *auth.Verifier
 	rateLimit *ratelimit.Limiter
 	docs      *doc.Library
+	kb        *kb.Pack
 	targets   *target.Catalog
 	upstream  *upstream.Client
 	repos     *git.Store
@@ -151,9 +168,13 @@ func (a *App) Run(ctx context.Context) error {
 	if err := a.loadTargets(ctx); err != nil {
 		return err
 	}
+	if err := a.loadKnowledge(ctx); err != nil {
+		return err
+	}
 	if err := a.initDatabases(ctx); err != nil {
 		return err
 	}
+	go a.checkAnnotations(ctx)
 
 	a.initAPIKeys(ctx)
 

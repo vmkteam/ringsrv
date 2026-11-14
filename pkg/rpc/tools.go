@@ -19,6 +19,7 @@ import (
 	"github.com/vmkteam/ringsrv/pkg/ring/code"
 	"github.com/vmkteam/ringsrv/pkg/ring/dbq"
 	"github.com/vmkteam/ringsrv/pkg/ring/files"
+	"github.com/vmkteam/ringsrv/pkg/ring/kb"
 	"github.com/vmkteam/ringsrv/pkg/ring/proxy"
 	"github.com/vmkteam/ringsrv/pkg/ring/public"
 	"github.com/vmkteam/ringsrv/pkg/ring/target"
@@ -97,6 +98,8 @@ type ToolsDeps struct {
 	DB *dbq.Manager
 	// Docs is the markdown library help and the refusals read cheat sheets from.
 	Docs *doc.Library
+	// KB is the knowledge pack of the instance; nil on an instance without one.
+	KB *kb.Pack
 	// MaxBytes is the answer size limit used when neither the call nor the
 	// profile sets one.
 	MaxBytes int
@@ -121,6 +124,7 @@ type ToolsService struct {
 	code     *code.Manager
 	db       *dbq.Manager
 	docs     *doc.Library
+	kb       *kb.Pack
 	sessions *ring.Sessions
 	env      string
 	isDevel  bool
@@ -143,6 +147,7 @@ func NewToolsService(d ToolsDeps) ToolsService {
 		code:     code.NewManager(d.Repos, d.Graph, d.Upstream),
 		db:       d.DB,
 		docs:     d.Docs,
+		kb:       d.KB,
 		sessions: d.Sessions,
 		env:      d.Targets.Env,
 		isDevel:  d.IsDevel,
@@ -319,12 +324,16 @@ func (s ToolsService) callAPI(ctx context.Context, arguments map[string]any) mcp
 	}
 	// Refused on the same condition that hides it from tools/list. The registry
 	// checks it too; this one gives the refusal its audit record.
-	if !acc.HasTool(ToolAPICall) {
+	if !apiCallGranted(acc) {
 		observe(ToolAPICall, "-", outcomeForbidden)
 		rec.DenyReason = ErrCodeForbiddenRole
+		msg := "your role does not grant " + ToolAPICall
+		if acc.HasTool(ToolAPICall) {
+			msg = "your role grants " + ToolAPICall + " but no target to call"
+		}
 		return errResult(ToolError{
 			Code:    ErrCodeForbiddenRole,
-			Message: "your role does not grant " + ToolAPICall,
+			Message: msg,
 			Env:     s.env,
 		})
 	}

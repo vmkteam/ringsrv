@@ -713,7 +713,7 @@ func TestCall_ToolTheRoleDoesNotGrantIsRefused(t *testing.T) {
 // The instructions promise the tools by name and the cheat sheet by URI.
 func TestInstructions_NameDBTools(t *testing.T) {
 	t.Parallel()
-	text := instructions("dev", false)
+	text := instructions("dev", false, nil)
 	for _, want := range []string{ToolDBQuery, ToolDBIntrospect, "ringsrv://tools/db.md"} {
 		assert.Contains(t, text, want)
 	}
@@ -738,4 +738,66 @@ func TestDBError_Permission(t *testing.T) {
 	e = ToolsService{}.dbError(t.Context(), ToolDBQuery, "shop-pg", refused, read)
 	assert.Contains(t, e.Message, "not granted SELECT")
 	assert.Contains(t, e.Message, "not missing data")
+}
+
+// dbOnlyCatalogTOML is an instance for data questions: one database, no profile,
+// and a role that asks for every tool there is.
+const dbOnlyCatalogTOML = `
+Env = "prod"
+
+[Databases.events]
+Description = "prod · ClickHouse events"
+Driver      = "clickhouse"
+Addr        = "ch.example.com:9000"
+Database    = "events"
+User        = "ringsrv_ro"
+Password    = "ch-pw"
+
+[Roles.data]
+Description = "data questions"
+Groups      = ["data-readers"]
+Tools       = ["*"]
+Targets     = ["*", "events"]
+`
+
+// A catalogue of databases alone offers the database tools and help, and
+// nothing that would have nothing to call: api_call with an empty target list,
+// the files sheet with no file route.
+func TestList_CatalogueOfDatabasesAlone(t *testing.T) {
+	t.Parallel()
+	cat, err := target.Parse([]byte(dbOnlyCatalogTOML))
+	require.NoError(t, err)
+
+	ch := dbqtest.New(dbqtest.Rows(1))
+	ch.TableList = []dbq.Table{{Name: "events", Kind: "MergeTree", RowsEstimate: 5}}
+	m := dbq.NewManager(dbq.Options{JQTimeout: time.Second, MaxBytes: 1 << 20, RetryAfter: time.Millisecond})
+	require.NoError(t, m.Add(dbq.Target{Name: "events", Driver: target.DriverClickHouse, Client: ch, MaxRows: 10, Timeout: time.Second, Password: "ch-pw", Database: "events"}))
+	require.NoError(t, m.Prove(t.Context()))
+
+	s := NewToolsService(ToolsDeps{
+		Targets: cat, DB: m, JQTimeout: time.Second, MaxBytes: 1 << 20,
+		Docs: testDocs(t), Sessions: ring.NewSessions(time.Hour, nil), Logger: embedlog.Logger{},
+	})
+	ctx := ctxWithGroups("data-readers")
+
+	list, err := s.List(ctx, "")
+	require.NoError(t, err)
+	names := make([]string, len(list.Tools))
+	for i, tool := range list.Tools {
+		names[i] = tool.Name
+	}
+	assert.Equal(t, []string{ToolDBQuery, ToolDBIntrospect, ToolHelp}, names)
+
+	res, err := s.Call(ctx, ToolAPICall, apiArgs(map[string]any{"target": "events", "path": "/"}))
+	require.NoError(t, err)
+	refused := decodeErr(t, res)
+	assert.Equal(t, ErrCodeForbiddenRole, refused.Code)
+	assert.Contains(t, refused.Message, "no target to call")
+
+	res, err = s.Call(ctx, ToolHelp, map[string]any{})
+	require.NoError(t, err)
+	sheets := sheetNamesOf(decodeHelp(t, res))
+	assert.Contains(t, sheets, sheetDB)
+	assert.NotContains(t, sheets, sheetFiles)
+	assert.NotContains(t, sheets, sheetCode)
 }

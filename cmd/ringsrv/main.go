@@ -75,16 +75,7 @@ func main() {
 	// reads them is a start — a bad moment to find out. The tests in pkg/app
 	// check the files that live in git; this checks the ones that do not.
 	if *flCheck {
-		cat, err := target.Load(cfg.Catalog.Path)
-		exitOnError(err)
-		sl.Print(ctx, "config ok",
-			"config", *flConfigPath,
-			"catalog", cfg.Catalog.Path,
-			"env", cat.Env,
-			"profiles", len(cat.Profiles),
-			"databases", len(cat.Databases),
-			"roles", len(cat.Roles),
-			"repos", len(cat.Repos))
+		checkConfig(ctx, sl, cfg)
 		return
 	}
 
@@ -150,4 +141,24 @@ func exitOnError(err error) {
 		slog.Error(err.Error())
 		os.Exit(1)
 	}
+}
+
+// checkConfig reads the catalogue and the knowledge pack the config names, runs
+// the checks a start would run, and reports what it found. Every failure exits.
+func checkConfig(ctx context.Context, sl embedlog.Logger, cfg app.Config) {
+	cat, err := target.Load(cfg.Catalog.Path)
+	exitOnError(err)
+	pack, err := app.LoadKnowledge(cfg, cat, nil)
+	exitOnError(err)
+	if pack != nil {
+		sl.Print(ctx, "knowledge ok", append([]any{"dir", cfg.Knowledge.Dir}, app.KnowledgeSummary(pack)...)...)
+	}
+	sl.Print(ctx, "config ok",
+		"config", *flConfigPath,
+		"catalog", cfg.Catalog.Path,
+		"env", cat.Env,
+		"profiles", len(cat.Profiles),
+		"databases", len(cat.Databases),
+		"roles", len(cat.Roles),
+		"repos", len(cat.Repos))
 }

@@ -2,6 +2,9 @@ package rpc
 
 import (
 	"fmt"
+	"strings"
+
+	"github.com/vmkteam/ringsrv/pkg/ring/kb"
 
 	"github.com/vmkteam/mcpkit/mcp"
 )
@@ -45,10 +48,40 @@ const budgetInstructions = `
 У работы часовой бюджет. Ответ каждого инструмента, который его тратит, и help несут поле budget: сколько потрачено, сколько осталось и когда сбросится. Когда осталось мало — сужай запросы (jq, лимит строк, окна поменьше), а не повторяй их. Отказ %d по бюджету — не падение сервера: в нём сказано, сколько ждать, а help, repo_map, ресурсы и промпты работают и тогда.
 `
 
-// instructions fills the contour into the sheet above, and adds the budget to
-// it when the instance has one.
-func instructions(env string, budget bool) string {
+// coreInstructions is what every instance says whatever its knowledge pack
+// says: the contour, the lists, help, and how to read a refusal. It stands
+// alone only in front of a pack that replaces the sheet above — an instance
+// without a pack keeps that sheet word for word, and the sheet says all of this
+// already. The %s is the contour, as above.
+const coreInstructions = `Окружение инстанса — %s. Оно задано конфигом и не меняется аргументом вызова.
+
+⚠️ Инструменты принимают СПИСОК и отвечают results[] в порядке отправки. Клиент отправляет вызовы по одному и ждёт каждый ответ, поэтому пять вопросов одним вызовом быстрее пяти вызовов. Планируй шаг целиком: всё, что не зависит от предыдущего ответа, уходит вместе. Одиночный вопрос — список из одного.
+
+Шпаргалки и база знаний — инструмент help: help(names: [...]) с именами из help() без аргумента; имя, которое кончается на «/», — список раздела. Нужны три — запрашивай три сразу. Готовые сценарии — prompts/list и prompts/get.
+
+Ошибка — это документация: отказ называет, что доступно. Пустой ответ — это ответ, перебирать запросы не надо.
+`
+
+// envPlaceholder is the one substitution a pack's instructions get: the
+// contour, from the catalogue and never from an argument (D25).
+const envPlaceholder = "{{env}}"
+
+// instructions fills the contour into the sheet, puts the pack's voice where
+// its mode says, and adds the budget when the instance has one. Without a pack
+// the text is what it was before packs existed.
+func instructions(env string, budget bool, pack *kb.Pack) string {
 	text := fmt.Sprintf(initInstructions, env)
+	if pack != nil {
+		if ins, ok := pack.Instructions(); ok {
+			body := strings.ReplaceAll(ins.Body, envPlaceholder, env)
+			switch ins.Mode {
+			case kb.ModeReplace:
+				text = body + "\n\n" + fmt.Sprintf(coreInstructions, env)
+			case kb.ModeAppend:
+				text += "\n" + body + "\n"
+			}
+		}
+	}
 	if budget {
 		text += fmt.Sprintf(budgetInstructions, mcp.CodeRateLimited)
 	}
