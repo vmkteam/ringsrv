@@ -1,7 +1,6 @@
 package sentry
 
 import (
-	"bytes"
 	"context"
 	"io"
 	"maps"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/getsentry/sentry-go/attribute"
 	"github.com/getsentry/sentry-go/internal/debuglog"
+	"github.com/getsentry/sentry-go/internal/httputils"
 	"github.com/getsentry/sentry-go/internal/ratelimit"
 	"github.com/getsentry/sentry-go/report"
 )
@@ -30,14 +30,21 @@ import (
 // an event for reporting, the current client adds information from the current
 // scope into the event.
 type Scope struct {
-	mu          sync.RWMutex
+	mu sync.RWMutex
+	// eventProcessors are retained by Clear and inherited by Clone.
+	eventProcessors []EventProcessor
+
+	// scopeData keeps track of all scope specific data
+	scopeData
+}
+
+type scopeData struct {
 	attributes  map[string]attribute.Value
 	breadcrumbs []*Breadcrumb
 	attachments []*Attachment
 	user        User
 	tags        map[string]string
 	contexts    map[string]Context
-	extra       map[string]interface{}
 	fingerprint []string
 	level       Level
 	request     *http.Request
@@ -50,7 +57,6 @@ type Scope struct {
 		// size.
 		Overflow() bool
 	}
-	eventProcessors []EventProcessor
 
 	propagationContext PropagationContext
 	span               *Span
@@ -58,15 +64,18 @@ type Scope struct {
 
 // NewScope creates a new Scope.
 func NewScope() *Scope {
-	return &Scope{
+	return &Scope{scopeData: newScopeData(NewPropagationContext())}
+}
+
+func newScopeData(propagationContext PropagationContext) scopeData {
+	return scopeData{
 		attributes:         make(map[string]attribute.Value),
 		breadcrumbs:        make([]*Breadcrumb, 0),
 		attachments:        make([]*Attachment, 0),
 		tags:               make(map[string]string),
 		contexts:           make(map[string]Context),
-		extra:              make(map[string]interface{}),
 		fingerprint:        make([]string, 0),
-		propagationContext: NewPropagationContext(),
+		propagationContext: propagationContext,
 	}
 }
 
@@ -130,15 +139,15 @@ func (scope *Scope) SetRequest(r *http.Request) {
 	}
 
 	// Don't buffer request body if we know it is oversized.
-	if r.ContentLength > maxRequestBodyBytes {
+	if r.ContentLength > httputils.MaxBodyBytes {
 		return
 	}
 	// Don't buffer if there is no body.
 	if r.Body == nil || r.Body == http.NoBody {
 		return
 	}
-	buf := &limitedBuffer{Capacity: maxRequestBodyBytes}
-	r.Body = readCloser{
+	buf := httputils.NewLimitedBuffer(httputils.MaxBodyBytes)
+	r.Body = httputils.ReadCloser{
 		Reader: io.TeeReader(r.Body, buf),
 		Closer: r.Body,
 	}
@@ -154,59 +163,7 @@ func (scope *Scope) SetRequestBody(b []byte) {
 	scope.mu.Lock()
 	defer scope.mu.Unlock()
 
-	capacity := maxRequestBodyBytes
-	overflow := false
-	if len(b) > capacity {
-		overflow = true
-		b = b[:capacity]
-	}
-	scope.requestBody = &limitedBuffer{
-		Capacity: capacity,
-		Buffer:   *bytes.NewBuffer(b),
-		overflow: overflow,
-	}
-}
-
-// maxRequestBodyBytes is the default maximum request body size to send to
-// Sentry.
-const maxRequestBodyBytes = 10 * 1024
-
-// A limitedBuffer is like a bytes.Buffer, but limited to store at most Capacity
-// bytes. Any writes past the capacity are silently discarded, similar to
-// io.Discard.
-type limitedBuffer struct {
-	Capacity int
-
-	bytes.Buffer
-	overflow bool
-}
-
-// Write implements io.Writer.
-func (b *limitedBuffer) Write(p []byte) (n int, err error) {
-	// Silently ignore writes after overflow.
-	if b.overflow {
-		return len(p), nil
-	}
-	left := b.Capacity - b.Len()
-	if left < 0 {
-		left = 0
-	}
-	if len(p) > left {
-		b.overflow = true
-		p = p[:left]
-	}
-	return b.Buffer.Write(p)
-}
-
-// Overflow returns true if the limitedBuffer discarded bytes written to it.
-func (b *limitedBuffer) Overflow() bool {
-	return b.overflow
-}
-
-// readCloser combines an io.Reader and an io.Closer to implement io.ReadCloser.
-type readCloser struct {
-	io.Reader
-	io.Closer
+	scope.requestBody = httputils.NewLimitedBufferFromBytes(httputils.MaxBodyBytes, b)
 }
 
 // SetAttributes adds attributes to the current scope.
@@ -282,44 +239,6 @@ func (scope *Scope) RemoveContext(key string) {
 	delete(scope.contexts, key)
 }
 
-// SetExtra adds an extra to the current scope.
-//
-// Deprecated: Use [Scope.SetAttributes] instead, which attaches typed key-value
-// pairs to logs and metrics. Note that attributes do not attach to error events;
-// if you only capture errors, use [Scope.SetTag] or [Scope.SetContext] to enrich them.
-func (scope *Scope) SetExtra(key string, value interface{}) {
-	scope.mu.Lock()
-	defer scope.mu.Unlock()
-
-	scope.extra[key] = value
-}
-
-// SetExtras assigns multiple extras to the current scope.
-//
-// Deprecated: Use [Scope.SetAttributes] instead, which attaches typed key-value
-// pairs to logs and metrics. Note that attributes do not attach to error events;
-// if you only capture errors, use [Scope.SetTag] or [Scope.SetContext] to enrich them.
-func (scope *Scope) SetExtras(extra map[string]interface{}) {
-	scope.mu.Lock()
-	defer scope.mu.Unlock()
-
-	for k, v := range extra {
-		scope.extra[k] = v
-	}
-}
-
-// RemoveExtra removes a extra from the current scope.
-//
-// Deprecated: Use [Scope.RemoveAttribute] instead. Note that attributes only
-// attach to logs and metrics, not error events. If you only capture errors,
-// use [Scope.RemoveTag] or [Scope.RemoveContext] instead.
-func (scope *Scope) RemoveExtra(key string) {
-	scope.mu.Lock()
-	defer scope.mu.Unlock()
-
-	delete(scope.extra, key)
-}
-
 // SetFingerprint sets new fingerprint for the current scope.
 func (scope *Scope) SetFingerprint(fingerprint []string) {
 	scope.mu.Lock()
@@ -342,6 +261,13 @@ func (scope *Scope) SetPropagationContext(propagationContext PropagationContext)
 	defer scope.mu.Unlock()
 
 	scope.propagationContext = propagationContext
+}
+
+func (scope *Scope) propagationContextSnapshot() PropagationContext {
+	scope.mu.RLock()
+	defer scope.mu.RUnlock()
+
+	return scope.propagationContext
 }
 
 // GetSpan returns the span from the current scope.
@@ -367,6 +293,7 @@ func (scope *Scope) Clone() *Scope {
 
 	clone := NewScope()
 	clone.user = scope.user
+	clone.user.Data = maps.Clone(scope.user.Data)
 	clone.breadcrumbs = make([]*Breadcrumb, len(scope.breadcrumbs))
 	copy(clone.breadcrumbs, scope.breadcrumbs)
 	clone.attachments = make([]*Attachment, len(scope.attachments))
@@ -374,21 +301,27 @@ func (scope *Scope) Clone() *Scope {
 	clone.attributes = maps.Clone(scope.attributes)
 	clone.contexts = maps.Clone(scope.contexts)
 	clone.tags = maps.Clone(scope.tags)
-	clone.extra = maps.Clone(scope.extra)
 	clone.fingerprint = make([]string, len(scope.fingerprint))
 	copy(clone.fingerprint, scope.fingerprint)
 	clone.level = scope.level
 	clone.request = scope.request
 	clone.requestBody = scope.requestBody
-	clone.eventProcessors = scope.eventProcessors
+	clone.eventProcessors = scope.eventProcessors[:len(scope.eventProcessors):len(scope.eventProcessors)]
 	clone.propagationContext = scope.propagationContext
 	clone.span = scope.span
 	return clone
 }
 
-// Clear removes the data from the current scope. Not safe for concurrent use.
+// Clear removes enrichment data while preserving event processors and trace
+// correlation. It is safe for concurrent use.
 func (scope *Scope) Clear() {
-	*scope = *NewScope()
+	scope.mu.Lock()
+	defer scope.mu.Unlock()
+
+	propagationContext := scope.propagationContext
+	span := scope.span
+	scope.scopeData = newScopeData(propagationContext)
+	scope.span = span
 }
 
 // AddEventProcessor adds an event processor to the current scope.
@@ -461,7 +394,7 @@ func (scope *Scope) ApplyToEvent(event *Event, hint *EventHint, client *Client) 
 		event.Contexts["trace"] = scope.propagationContext.Map()
 
 		dsc := scope.propagationContext.DynamicSamplingContext
-		if !dsc.HasEntries() && client != nil {
+		if !dsc.HasEntries() && client.IsEnabled() {
 			dsc = DynamicSamplingContextFromScope(scope, client)
 		}
 		event.sdkMetaData.dsc = dsc
@@ -469,7 +402,7 @@ func (scope *Scope) ApplyToEvent(event *Event, hint *EventHint, client *Client) 
 
 	// If an external trace resolver is registered (e.g. OTel), override
 	// trace/span IDs from the hint context or the scope's request context.
-	if client != nil {
+	if client.IsEnabled() {
 		var ctx context.Context
 		if hint != nil {
 			ctx = hint.Context
@@ -479,23 +412,14 @@ func (scope *Scope) ApplyToEvent(event *Event, hint *EventHint, client *Client) 
 		}
 		if traceID, spanID, ok := client.externalTraceContextFromContext(ctx); event.Type != transactionType && ok {
 			traceCtx := event.Contexts["trace"]
-			traceCtx["trace_id"] = traceID.String()
-			traceCtx["span_id"] = spanID.String()
-		}
-	}
-
-	if len(scope.extra) > 0 {
-		if event.Extra == nil {
-			event.Extra = make(map[string]interface{}, len(scope.extra))
-		}
-
-		for key, value := range scope.extra {
-			event.Extra[key] = value
+			traceCtx[traceIDContextKey] = traceID.String()
+			traceCtx[spanIDContextKey] = spanID.String()
 		}
 	}
 
 	if event.User.IsEmpty() {
 		event.User = scope.user
+		event.User.Data = maps.Clone(scope.user.Data)
 	}
 
 	if len(event.Fingerprint) == 0 {
@@ -507,7 +431,7 @@ func (scope *Scope) ApplyToEvent(event *Event, hint *EventHint, client *Client) 
 	}
 
 	if event.Request == nil && scope.request != nil {
-		event.Request = NewRequest(scope.request)
+		event.Request = newRequest(scope.request, client)
 		// NOTE: The SDK does not attempt to send partial request body data.
 		//
 		// The reason being that Sentry's ingest pipeline and UI are optimized
@@ -516,9 +440,10 @@ func (scope *Scope) ApplyToEvent(event *Event, hint *EventHint, client *Client) 
 		// invalid payloads that are more prone to leaking PII data.
 		//
 		// Users can still send more data along their events if they want to,
-		// for example using Event.Extra.
-		if scope.requestBody != nil && !scope.requestBody.Overflow() {
-			event.Request.Data = string(scope.requestBody.Bytes())
+		// for example using Event.Contexts.
+		dc := client.GetDataCollection()
+		if scope.requestBody != nil && !scope.requestBody.Overflow() && dc.CollectHTTPBody(BodyIncomingRequest) {
+			event.Request.Data = dc.FilterHTTPBody(scope.requestBody.Bytes(), scope.request.Header.Get("Content-Type"))
 		}
 	}
 
@@ -529,7 +454,7 @@ func (scope *Scope) ApplyToEvent(event *Event, hint *EventHint, client *Client) 
 		event = processor(event, hint)
 		if event == nil {
 			debuglog.Printf("Event dropped by one of the Scope EventProcessors: %s\n", id)
-			if client != nil {
+			if client.IsEnabled() {
 				client.reportRecorder.RecordOne(report.ReasonEventProcessor, category)
 				if category == ratelimit.CategoryTransaction {
 					client.reportRecorder.Record(report.ReasonEventProcessor, ratelimit.CategorySpan, int64(spanCountBefore))
@@ -538,7 +463,7 @@ func (scope *Scope) ApplyToEvent(event *Event, hint *EventHint, client *Client) 
 			return nil
 		}
 		if droppedSpans := spanCountBefore - event.GetSpanCount(); droppedSpans > 0 {
-			if client != nil {
+			if client.IsEnabled() {
 				client.reportRecorder.Record(report.ReasonEventProcessor, ratelimit.CategorySpan, int64(droppedSpans))
 			}
 		}
@@ -619,7 +544,7 @@ func resolveTrace(scope *Scope, client *Client, ctxs ...context.Context) (traceI
 		if ctx == nil {
 			continue
 		}
-		if client != nil {
+		if client.IsEnabled() {
 			if traceID, spanID, ok := client.externalTraceContextFromContext(ctx); ok {
 				return traceID, spanID
 			}

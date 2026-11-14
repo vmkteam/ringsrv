@@ -41,13 +41,14 @@ github.com/cespare/xxhash/v2
 # github.com/coreos/go-oidc/v3 v3.17.0
 ## explicit; go 1.24.0
 github.com/coreos/go-oidc/v3/oidc
-# github.com/getsentry/sentry-go v0.45.1
-## explicit; go 1.24.0
+# github.com/getsentry/sentry-go v0.50.0
+## explicit; go 1.25.0
 github.com/getsentry/sentry-go
 github.com/getsentry/sentry-go/attribute
 github.com/getsentry/sentry-go/internal/debug
 github.com/getsentry/sentry-go/internal/debuglog
 github.com/getsentry/sentry-go/internal/http
+github.com/getsentry/sentry-go/internal/httputils
 github.com/getsentry/sentry-go/internal/otel/baggage
 github.com/getsentry/sentry-go/internal/otel/baggage/internal/baggage
 github.com/getsentry/sentry-go/internal/protocol
@@ -55,8 +56,8 @@ github.com/getsentry/sentry-go/internal/ratelimit
 github.com/getsentry/sentry-go/internal/telemetry
 github.com/getsentry/sentry-go/internal/util
 github.com/getsentry/sentry-go/report
-# github.com/getsentry/sentry-go/echo v0.41.0
-## explicit; go 1.23.0
+# github.com/getsentry/sentry-go/echo v0.44.1
+## explicit; go 1.24.0
 github.com/getsentry/sentry-go/echo
 # github.com/go-faster/city v1.0.1
 ## explicit; go 1.17
@@ -248,7 +249,7 @@ github.com/vmkteam/mcpkit/mcptest
 github.com/vmkteam/mcpkit/mcptool
 github.com/vmkteam/mcpkit/ratelimit
 github.com/vmkteam/mcpkit/redact
-# github.com/vmkteam/zenrpc-middleware v1.3.2
+# github.com/vmkteam/zenrpc-middleware v1.3.3
 ## explicit; go 1.24.5
 github.com/vmkteam/zenrpc-middleware
 # github.com/vmkteam/zenrpc/v2 v2.3.3
