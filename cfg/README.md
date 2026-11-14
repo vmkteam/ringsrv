@@ -157,7 +157,7 @@ Write              = true                         # only roles with AllowWrite s
 | `AllowMethods` | yes | upper case. Any method other than `GET` requires `Write = true` or `ReadOnlyPost = true` |
 | `AllowPaths` | yes | regular expressions, **each anchored with `^` and ended explicitly: `$` or `/`**; an optional method prefix: `"POST ^/api/ds/query$"` |
 | `DefaultJQ` | — | the default filter; a call may override it, and `jq: "."` returns the raw body. Compiled at load; an answer filtered by it is marked `default_jq: true` |
-| `MaxBytes` | — | the answer ceiling for this target; 0 → the instance's `Limits.MaxBytes`. A call's argument may not exceed 262144 |
+| `MaxBytes` | — | the answer ceiling for this target; 0 → the instance's `Limits.MaxBytes`. A call's `max_bytes` may narrow it, or widen it up to 262144 or up to this value where it is larger |
 | `Timeout` | — | how long one call to this target may take, the answer read included, as a duration (`"60s"`); 0 → the instance's `Limits.UpstreamTimeout`. At most 90s: the server cuts the answer to the client at two minutes. For an API whose honest answer is slow — a log query over a day — not for one that hangs |
 | `TimeParams` / `TimeFormat` | — | the query parameters where `now-1h` / `now-24h` / `now-7d` are expanded by the server, and into what: `unix`, `unix_ms`, `unix_ns`, `rfc3339` |
 | `TimeBodyParams` | — | the same for a JSON body, by dotted paths (`params.start`); the unix formats become a number and `rfc3339` a string; a batch is handled element by element. Requires `TimeFormat` and a method with a body. An entry may name its own format after a colon — `"params.filter.from:rfc3339"` — for an upstream whose windows differ in format; then `TimeFormat` is only needed by the entries without a suffix |
@@ -474,7 +474,7 @@ profiles: a role lists both in `Targets`.
 | `Repo` | — | a name from `[Repos.*]`, or a list of them — a database may be written by more than one service. `db_introspect` answers with `code: {repos: [{repo, layer}], hint}`. The pointer leads to the `db` layer, or to `domain` when there is none |
 | `SchemaRepos` | — | `postgres` only: schema → list of repositories, overriding `Repo` for that schema. A key must be in `Schemas`, and the list non-empty and free of repeats. The `hint` is one `code_search` across all of them when their layer matches, and one call per repository otherwise |
 | `Redact` / `RedactRules` | postgres: yes | the redaction mode for answer rows; SQL in the audit is redacted always, whatever the mode |
-| `MaxRows` / `Timeout` / `MaxBytes` / `MaxConcurrent` | — | zeros take the defaults of the instance and the client; `Timeout` is a string (`"15s"`) and a bare number is rejected |
+| `MaxRows` / `Timeout` / `MaxBytes` / `MaxConcurrent` | — | zeros take the defaults of the instance and the client; `Timeout` is a string (`"15s"`) and a bare number is rejected. `MaxBytes` caps one statement's answer, and a call's `max_bytes` may widen it no further than the larger of 262144 and this value; a statement may read twice its answer cap off the wire, never less than 1 MiB. `MaxConcurrent` is the pool and how many statements run at once |
 
 **There is no writing in any form** — no flag and no separate profile. The user
 is read-only on the database side, and the server proves it with probes at

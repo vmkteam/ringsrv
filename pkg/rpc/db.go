@@ -41,7 +41,7 @@ type DBQueryArgs struct {
 	// Queries is short because most of what the log shows is drill-down: the
 	// next statement is written after reading the previous answer.
 	Queries  []DBQuery `json:"queries" jsonschema:"required" jsonschema_description:"Independent read statements, up to 5. One query is a list of one."`
-	MaxBytes int       `json:"max_bytes,omitempty" jsonschema_description:"Budget in bytes for the whole batch; max 262144."`
+	MaxBytes int       `json:"max_bytes,omitempty" jsonschema_description:"Answer cap per statement, bytes; the default and the ceiling are the base's."`
 	Intent   string    `json:"intent,omitempty" jsonschema_description:"Why, <=120 chars; audited."`
 }
 

@@ -247,10 +247,27 @@ func (e *entry) emptyNote(scope Scope) string {
 // DefaultRetryAfter is how long an unproven target waits between probes.
 const DefaultRetryAfter = time.Minute
 
-// resultBudget is the most a query may pull off the wire before it is cancelled.
-// The answer itself is cut to MaxBytes afterwards; the budget is what keeps one
-// call from reading a table into the memory of the only MCP gateway.
-const resultBudget = 4 * ring.MaxAnswerBytes
+// minReadBudget is the floor of what a query may pull off the wire before it is
+// cancelled: the budget every target had before it could be given a bigger
+// answer, and still the one of every target whose answer is a quarter megabyte
+// or less.
+const minReadBudget = 4 * ring.MaxAnswerBytes
+
+// readBudget is the most a query may pull off the wire, for an answer capped at
+// limit. The answer is cut to its limit afterwards; the budget is what keeps one
+// call from reading a table into the memory of the only MCP gateway. A fixed
+// megabyte did that, and also failed a wide answer that fit its limit: a target
+// allowed a megabyte answered "more than 1048576 bytes read" — an error, not a
+// cut — before the answer limit ever had its say.
+//
+// Twice the limit: the values come off the wire at about the size of their JSON
+// or less (no quotes, no commas, no escapes), so a full answer fits, with room
+// for a jq that keeps half of what it reads. It stays bounded — one statement
+// holds at most twice what the operator allowed it to answer — and the floor
+// keeps every target as it was.
+func readBudget(limit int) int {
+	return max(minReadBudget, 2*limit)
+}
 
 // NewManager makes an empty manager; targets are added one by one.
 func NewManager(opts Options) *Manager {
@@ -541,6 +558,12 @@ func (m *Manager) driverOf(name string) (string, bool) {
 	return e.Driver, true
 }
 
+// answerLimit is the answer cap of one request: the call's max_bytes against
+// the target's and the instance's (ring.PickLimit).
+func (m *Manager) answerLimit(e *entry, req Request) int {
+	return ring.PickLimit(req.MaxBytes, e.MaxBytes, m.opts.MaxBytes)
+}
+
 // Query checks the text, wraps it, runs it and shapes the answer. The text is
 // checked before the target is proved: a refusal that needs no server should not
 // wait for one.
@@ -577,7 +600,7 @@ func (m *Manager) Query(ctx context.Context, name string, req Request) (*Answer,
 	qctx, cancel := context.WithTimeout(ctx, e.Timeout+time.Second)
 	defer cancel()
 	started := m.opts.Now()
-	res, err := e.Client.Query(qctx, Statement{SQL: sql, MaxRows: limit, MaxBytes: resultBudget, Timeout: e.Timeout, Caller: req.Caller})
+	res, err := e.Client.Query(qctx, Statement{SQL: sql, MaxRows: limit, MaxBytes: readBudget(m.answerLimit(e, req)), Timeout: e.Timeout, Caller: req.Caller})
 	elapsed := m.opts.Now().Sub(started)
 	if err != nil {
 		out := m.classify(e, err)
