@@ -233,8 +233,7 @@ func classifyUnder(parent context.Context, err error) error {
 // (UNKNOWN_TABLE) by their codes, the socket's and the context's timeouts
 // by dbq.WrapTimeout.
 func classify(err error) error {
-	var exc *clickhouse.Exception
-	if errors.As(err, &exc) {
+	if exc, ok := errors.AsType[*clickhouse.Exception](err); ok {
 		switch exc.Code {
 		case codeTimeoutExceeded:
 			return fmt.Errorf("%w: %s", dbq.ErrTimeout, exc.Message)

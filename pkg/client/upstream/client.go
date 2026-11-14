@@ -72,6 +72,9 @@ type Target struct {
 	PathPrefix string
 	// Headers are "Name: value" pairs with credentials already substituted.
 	Headers []string
+	// Timeout bounds a call to this target, the body read included; zero
+	// leaves the client's.
+	Timeout time.Duration
 }
 
 // Response is what a target answered, after reading at most MaxBytes of body.
@@ -110,9 +113,14 @@ type Options struct {
 
 // Client calls upstreams on behalf of api_call.
 type Client struct {
+	// http carries no timeout of its own: each call sets its deadline on the
+	// request's context, because a profile may wait longer than the default.
 	http *http.Client
-	opts Options
-	sem  chan struct{}
+	// shared is the same transport with the default timeout, for callers that
+	// bring no deadline of their own (see HTTP).
+	shared *http.Client
+	opts   Options
+	sem    chan struct{}
 }
 
 // New builds the client. Metrics come from appkit's transport, so the existing
@@ -125,19 +133,16 @@ type Client struct {
 // talking to each other, and it adds headers rather than setting them, which
 // would duplicate one a profile already declared.
 func New(opts Options) *Client {
+	transport := newTransport(opts.MaxConcurrent)
+	// Never follow a redirect: the allowlist approved one host, and Go forwards
+	// every custom header to the next one — PRIVATE-TOKEN, X-Nomad-Token —
+	// dropping only Authorization and Cookie. The 3xx comes back with its
+	// Location instead.
+	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	c := &Client{
-		http: &http.Client{
-			Timeout:   opts.Timeout,
-			Transport: newTransport(opts.MaxConcurrent),
-			// Never follow a redirect: the allowlist approved one host, and Go
-			// forwards every custom header to the next one — PRIVATE-TOKEN,
-			// X-Nomad-Token — dropping only Authorization and Cookie. The 3xx
-			// comes back with its Location instead.
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		},
-		opts: opts,
+		http:   &http.Client{Transport: transport, CheckRedirect: noRedirect},
+		shared: &http.Client{Timeout: opts.Timeout, Transport: transport, CheckRedirect: noRedirect},
+		opts:   opts,
 	}
 	if opts.MaxConcurrent > 0 {
 		c.sem = make(chan struct{}, opts.MaxConcurrent)
@@ -166,7 +171,28 @@ func (c *Client) HTTP() *http.Client {
 	if c == nil {
 		return nil
 	}
-	return c.http
+	return c.shared
+}
+
+// TimeoutFor is what one call to t may take: the target's own when the
+// catalogue set one, the client's otherwise. Do and Download apply it; a
+// caller that goes around them bounds itself with it.
+func (c *Client) TimeoutFor(t Target) time.Duration {
+	if t.Timeout > 0 {
+		return t.Timeout
+	}
+	return c.opts.Timeout
+}
+
+// withDeadline puts the call's deadline on its context. Zero means none, as an
+// http.Client with a zero Timeout has none. The deadline covers the wait for a
+// concurrency slot too: under load a call spends part of its time in the
+// queue, and runs out of it there rather than waiting without a bound.
+func withDeadline(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, timeout)
 }
 
 // Request is one call to a target. Path is raw, query included; it must
@@ -197,6 +223,9 @@ func (c *Client) Do(ctx context.Context, t Target, r Request) (*Response, error)
 	// The caller label turns the shared metrics into per-target ones, without a
 	// metric of our own.
 	ctx = appkit.NewCallerNameContext(ctx, t.Name)
+	timeout := c.TimeoutFor(t)
+	ctx, cancel := withDeadline(ctx, timeout)
+	defer cancel()
 
 	var rdr io.Reader
 	if body != "" {
@@ -222,7 +251,7 @@ func (c *Client) Do(ctx context.Context, t Target, r Request) (*Response, error)
 	if body != "" && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	return c.send(req, r.MaxBytes)
+	return c.send(req, r.MaxBytes, timeout)
 }
 
 // DownloadOptions bound a Download: where it may go and how much it may read.
@@ -249,6 +278,9 @@ func (c *Client) Download(ctx context.Context, t Target, rawURL string, opts Dow
 		return nil, err
 	}
 	ctx = appkit.NewCallerNameContext(ctx, t.Name)
+	timeout := c.TimeoutFor(t)
+	ctx, cancel := withDeadline(ctx, timeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("upstream: build request: %w", err)
@@ -261,12 +293,13 @@ func (c *Client) Download(ctx context.Context, t Target, rawURL string, opts Dow
 			req.Header.Set("Authorization", strings.TrimSpace(value))
 		}
 	}
-	return c.send(req, opts.MaxBytes)
+	return c.send(req, opts.MaxBytes, timeout)
 }
 
 // send makes the request under the concurrency limit and reads the answer up to
-// maxBytes, or up to the client's limit when that is zero.
-func (c *Client) send(req *http.Request, maxBytes int64) (*Response, error) {
+// maxBytes, or up to the client's limit when that is zero. The deadline is on
+// the request's context already; timeout is what a timeout error reports.
+func (c *Client) send(req *http.Request, maxBytes int64, timeout time.Duration) (*Response, error) {
 	release, err := c.acquire(req.Context())
 	if err != nil {
 		return nil, err
@@ -282,7 +315,7 @@ func (c *Client) send(req *http.Request, maxBytes int64) (*Response, error) {
 	resp, err := c.http.Do(req)
 	if err != nil {
 		if isTimeout(err) {
-			return nil, fmt.Errorf("%w after %s", ErrTimeout, c.opts.Timeout)
+			return nil, fmt.Errorf("%w after %s", ErrTimeout, timeout)
 		}
 		return nil, fmt.Errorf("upstream: %w", err)
 	}
@@ -295,7 +328,7 @@ func (c *Client) send(req *http.Request, maxBytes int64) (*Response, error) {
 	data, truncated, err := readBody(resp.Body, limit, resp.ContentLength)
 	if err != nil {
 		if isTimeout(err) {
-			return nil, fmt.Errorf("%w after %s", ErrTimeout, c.opts.Timeout)
+			return nil, fmt.Errorf("%w after %s", ErrTimeout, timeout)
 		}
 		return nil, fmt.Errorf("upstream: read body: %w", err)
 	}
@@ -317,9 +350,6 @@ func (c *Client) userAgent() string {
 // not go through Do — a session with a store over another protocol — so that
 // it counts against the same limit. The release has to run.
 func (c *Client) Slot(ctx context.Context) (func(), error) { return c.acquire(ctx) }
-
-// Timeout is what one call may take, for a caller that bounds its own.
-func (c *Client) Timeout() time.Duration { return c.opts.Timeout }
 
 // acquire takes a slot in the concurrency limit and returns the release, which
 // runs on every path out: a leaked slot degrades the whole instance and looks

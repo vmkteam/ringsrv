@@ -48,7 +48,7 @@ type Match struct {
 
 // Grep searches one commit. On the measured repository a literal search took
 // 0.89s and a regexp one 1.01s, which is why the caller gets a limit and a
-// timeout rather than a promise.
+// timeout (GrepTimeout) rather than a promise.
 func (s *Store) Grep(ctx context.Context, repo, sha string, opts GrepOptions) ([]Match, bool, error) {
 	if err := ValidateRef(sha); err != nil {
 		return nil, false, err
@@ -81,7 +81,7 @@ func (s *Store) Grep(ctx context.Context, repo, sha string, opts GrepOptions) ([
 		args = append(args, "--", opts.Glob)
 	}
 
-	out, err := s.run(ctx, s.ClonePath(repo), args...)
+	out, err := s.runEnvTimeout(ctx, s.grepTimeout(), s.ClonePath(repo), nil, args...)
 	if err != nil {
 		// git grep exits 1 when nothing matched: an answer, not a failure.
 		if strings.Contains(err.Error(), "exit status 1") {

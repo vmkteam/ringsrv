@@ -107,6 +107,18 @@ func pgExplainAnalyze(rest string) bool {
 	}
 }
 
+// writeWordRe finds what PostgreSQL plans as a write: a data-modifying
+// statement, in a CTE or under EXPLAIN, and the row locks of SELECT … FOR
+// UPDATE, which need the UPDATE privilege too.
+var writeWordRe = regexp.MustCompile(`(?i)\b(INSERT|UPDATE|DELETE|MERGE)\b`)
+
+// WritesData reports whether a query asks for a write, as far as its words
+// tell, outside literals, comments and quoted names. It explains a refusal the
+// server already made and never makes one: update is a valid column name.
+func WritesData(driver, sql string) bool {
+	return writeWordRe.MatchString(mask(sql, driver))
+}
+
 // WrapLimit puts a SELECT-like statement under the given LIMIT. The newline
 // before the closing bracket keeps a trailing "--" comment from eating it, and a
 // trailing ";" is dropped because it may not sit inside a subquery. EXPLAIN,

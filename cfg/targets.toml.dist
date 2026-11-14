@@ -43,6 +43,10 @@ BaseURL      = "https://prometheus.example.com"
 AllowMethods = ["GET"]
 AllowPaths   = [
   "^/api/v1/(query|query_range|labels|series)$",
+  # Rules and the alerts firing now: "is it alerting" is answered here, not by
+  # rebuilding the alert's expression by hand. type narrows rules to alert or
+  # record.
+  "^/api/v1/(rules|alerts)$",
   "^/api/v1/label/[^/]+/values$",
   "^/api/v1/status/buildinfo$",
 ]
@@ -50,10 +54,10 @@ AllowPaths   = [
 # QueryParamNotAllowed. step is bounded from below by the scrape interval: a
 # smaller step duplicates points instead of adding them. The list is checked
 # against the cheat sheet in both directions, so the two cannot drift.
-AllowQueryParams = ["query", "time", "timeout", "start", "end", "step>=15s", "limit", "match[]", "lookback_delta"]
+AllowQueryParams = ["query", "time", "timeout", "start", "end", "step>=15s", "limit", "match[]", "lookback_delta", "type"]
 # Two answer shapes: query and query_range put the series under .data.result,
-# while labels, label values, series and buildinfo put an array or an object
-# directly in .data. One filter per profile, so it tells them apart itself.
+# while labels, label values, series, rules, alerts and buildinfo put an array
+# or an object directly in .data. One filter per profile, so it tells them apart itself.
 DefaultJQ    = '.data | if type == "object" and has("result") then .result else . end'
 TimeParams   = ["start", "end", "time"]
 TimeFormat   = "unix"
@@ -79,6 +83,10 @@ AllowPaths         = [
   "POST ^/api/ds/query$",   # semantically a read: run a query against a datasource
 ]
 ReadOnlyPost       = true
+# A log query over a day is honestly slow: one ds/query in nine ran into the
+# instance's 20s and came back as a timeout. Longer here than the default, and
+# under the 90s the server allows.
+Timeout            = "60s"
 
 [Profiles.sentry]
 Description        = "dev · Sentry: issues, events, releases; environment is pinned to the contour"
@@ -89,7 +97,9 @@ AllowMethods       = ["GET"]
 AllowPaths         = [
   "^/api/0/organizations/$",
   "^/api/0/organizations/[\\w-]+/(issues|projects|releases)/",
-  "^/api/0/issues/\\d+(/events/latest)?/$",
+  # An issue, its latest, first and most complete event, and the spread of one
+  # tag's values (release, environment, server_name) over its events.
+  "^/api/0/issues/\\d+(/events/(latest|oldest|recommended)|/tags/[\\w.:-]+)?/$",
   "^/api/0/projects/[\\w-]+/[\\w-]+/(issues|events)/",
 ]
 # One Sentry for several contours: the server sets the environment on every
@@ -126,20 +136,25 @@ SkipDefaultHeaders = true
 Headers            = ["PRIVATE-TOKEN: <gitlab-personal-access-token>"]
 AllowMethods       = ["GET"]
 AllowPaths         = [
-  # The only path without a project id: "the host is alive and the token is
-  # accepted", answered before it turns out the id was the problem.
+  # "The host is alive and the token is accepted", answered before it turns
+  # out the id was the problem.
   "^/api/v4/version$",
-  "^/api/v4/projects/\\d+$",
-  "^/api/v4/projects/\\d+/repository/files/[^/]+/raw$",
-  "^/api/v4/projects/\\d+/repository/(tree|compare|commits|branches|tags)$",
-  "^/api/v4/projects/\\d+/repository/branches/[^/]+$",
-  "^/api/v4/projects/\\d+/repository/commits/[0-9a-f]+(/diff)?$",
-  "^/api/v4/projects/\\d+/merge_requests$",
-  "^/api/v4/projects/\\d+/merge_requests/\\d+(/changes|/diffs|/notes|/commits|/pipelines)?$",
-  "^/api/v4/projects/\\d+/pipelines$",
-  "^/api/v4/projects/\\d+/pipelines/\\d+(/jobs)?$",
-  "^/api/v4/projects/\\d+/jobs/\\d+(/trace)?$",
-  "^/api/v4/projects/\\d+/search$",
+  # A project is its numeric id or its full path with the slash encoded,
+  # group%2Fproject, as it is copied from an MR link. The list with search
+  # finds one by name: without it the model walks ids one by one, and a
+  # project the token cannot see answers 404 like one that does not exist.
+  "^/api/v4/projects$",
+  "^/api/v4/projects/(\\d+|[\\w.-]+(%2F[\\w.-]+)+)$",
+  "^/api/v4/projects/(\\d+|[\\w.-]+(%2F[\\w.-]+)+)/repository/files/[^/]+/raw$",
+  "^/api/v4/projects/(\\d+|[\\w.-]+(%2F[\\w.-]+)+)/repository/(tree|compare|commits|branches|tags)$",
+  "^/api/v4/projects/(\\d+|[\\w.-]+(%2F[\\w.-]+)+)/repository/branches/[^/]+$",
+  "^/api/v4/projects/(\\d+|[\\w.-]+(%2F[\\w.-]+)+)/repository/commits/[0-9a-f]+(/diff)?$",
+  "^/api/v4/projects/(\\d+|[\\w.-]+(%2F[\\w.-]+)+)/merge_requests$",
+  "^/api/v4/projects/(\\d+|[\\w.-]+(%2F[\\w.-]+)+)/merge_requests/\\d+(/changes|/diffs|/notes|/commits|/pipelines)?$",
+  "^/api/v4/projects/(\\d+|[\\w.-]+(%2F[\\w.-]+)+)/pipelines$",
+  "^/api/v4/projects/(\\d+|[\\w.-]+(%2F[\\w.-]+)+)/pipelines/\\d+(/jobs)?$",
+  "^/api/v4/projects/(\\d+|[\\w.-]+(%2F[\\w.-]+)+)/jobs/\\d+(/trace)?$",
+  "^/api/v4/projects/(\\d+|[\\w.-]+(%2F[\\w.-]+)+)/search$",
 ]
 # The query parameters are deliberately not listed: GitLab has hundreds of them
 # and a partial list reads as access denied. private_token, access_token,

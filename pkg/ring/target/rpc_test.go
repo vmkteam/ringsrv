@@ -1,6 +1,7 @@
 package target
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 
@@ -44,7 +45,7 @@ func TestCheckRPC(t *testing.T) {
 		"  \n" + `{"method":"host.list"}` + "\n",
 	}
 	for _, body := range allowed {
-		require.NoError(t, p.CheckRPC(body), body)
+		require.NoError(t, p.CheckRPC(http.MethodPost, body), body)
 	}
 
 	refused := map[string]string{
@@ -61,10 +62,27 @@ func TestCheckRPC(t *testing.T) {
 		`{"method":"host.list"`:                               "not a JSON-RPC request",
 	}
 	for body, want := range refused {
-		err := p.CheckRPC(body)
+		err := p.CheckRPC(http.MethodPost, body)
 		require.Error(t, err, body)
 		assert.Contains(t, err.Error(), want, body)
 	}
+}
+
+// A guarded profile also serves its schema and documents by GET next to the
+// endpoint. A GET without a body is no JSON-RPC request and passes; one that
+// carries a body is read like a POST, and a bodiless POST is still refused.
+func TestCheckRPC_BodilessRead(t *testing.T) {
+	t.Parallel()
+	c, err := Parse([]byte(rpcTOML))
+	require.NoError(t, err)
+	p := c.Profiles["topsrv"]
+
+	require.NoError(t, p.CheckRPC(http.MethodGet, ""))
+	require.NoError(t, p.CheckRPC("get", " \n"))
+	require.NoError(t, p.CheckRPC(http.MethodHead, ""))
+	require.NoError(t, p.CheckRPC(http.MethodGet, `{"method":"host.list"}`))
+	require.ErrorContains(t, p.CheckRPC(http.MethodGet, `{"method":"alert.silence"}`), `"alert.silence" is not allowed`)
+	require.ErrorContains(t, p.CheckRPC(http.MethodPost, ""), "body is empty")
 }
 
 // A profile without the list is not guarded: the check is a no-op so the
@@ -75,8 +93,8 @@ func TestCheckRPC_Unguarded(t *testing.T) {
 	require.NoError(t, err)
 	p := c.Profiles["prom"]
 	assert.False(t, p.RPCGuarded())
-	require.NoError(t, p.CheckRPC(""))
-	require.NoError(t, p.CheckRPC(`{"method":"anything"}`))
+	require.NoError(t, p.CheckRPC(http.MethodPost, ""))
+	require.NoError(t, p.CheckRPC(http.MethodPost, `{"method":"anything"}`))
 }
 
 // The list is checked at load: a method list on a GET-only profile, a

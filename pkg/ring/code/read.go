@@ -116,6 +116,10 @@ type SearchResult struct {
 	// Skipped names the repositories that do not have the commit. One SHA
 	// lives in one repository, and a search is usually asked across several.
 	Skipped []string
+	// TimedOut names the repositories whose search ran past its cap. The rest
+	// of the answer stands: one slow mirror used to cost the matches found in
+	// all the others.
+	TimedOut []string
 	// Work is how long each repository's part took, a skipped one included —
 	// finding out it lacks the commit may have cost a fetch. The parts run at
 	// once, so the wall clock of the search is the slowest of them, not the
@@ -148,6 +152,7 @@ func (s *Manager) Search(ctx context.Context, repos []Repo, q SearchQuery) (*Sea
 		matches   []Match
 		truncated bool
 		skipped   bool
+		timedOut  error
 		took      time.Duration
 	}
 	results := make([]found, len(repos))
@@ -166,6 +171,10 @@ func (s *Manager) Search(ctx context.Context, repos []Repo, q SearchQuery) (*Sea
 				return nil
 			}
 			matches, truncated, err := s.grep(gctx, repo, sha, q)
+			if errors.Is(err, git.ErrTimeout) {
+				results[i] = found{sha: sha, timedOut: err, took: time.Since(started)}
+				return nil
+			}
 			if err != nil {
 				return err
 			}
@@ -180,10 +189,16 @@ func (s *Manager) Search(ctx context.Context, repos []Repo, q SearchQuery) (*Sea
 	// Merged in the order the repositories were asked about, so two identical
 	// searches read the same way.
 	res := &SearchResult{Work: make([]RepoWork, len(repos))}
+	var lastTimeout error
 	for i, r := range results {
 		res.Work[i] = RepoWork{Repo: repos[i].Name, Took: r.took}
 		if r.skipped {
 			res.Skipped = append(res.Skipped, repos[i].Name)
+			continue
+		}
+		if r.timedOut != nil {
+			res.TimedOut = append(res.TimedOut, repos[i].Name)
+			lastTimeout = r.timedOut
 			continue
 		}
 		res.Ref = r.sha
@@ -192,6 +207,11 @@ func (s *Manager) Search(ctx context.Context, repos []Repo, q SearchQuery) (*Sea
 	}
 	if len(res.Skipped) == len(repos) {
 		return nil, fmt.Errorf("%s: %w", q.Ref, git.ErrNotFound)
+	}
+	// Nothing searched to the end: the timeout is the answer, and its error
+	// carries the advice to narrow the search.
+	if len(res.TimedOut) > 0 && len(res.Skipped)+len(res.TimedOut) == len(repos) {
+		return nil, lastTimeout
 	}
 	return res, nil
 }

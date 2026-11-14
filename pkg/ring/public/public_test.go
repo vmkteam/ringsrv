@@ -93,8 +93,7 @@ func newGuard() *Guard {
 }
 
 func refusal(err error) string {
-	var ref *RefusedError
-	if errors.As(err, &ref) {
+	if ref, ok := errors.AsType[*RefusedError](err); ok {
 		return ref.Code
 	}
 	return ""

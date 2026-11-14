@@ -1,12 +1,18 @@
 ARG CI_PROJECT_NAME=ringsrv
 
 # Stage 1: Build backend
-FROM golang:1.26-alpine AS builder
+FROM golang:1.27-alpine AS builder
 ARG CI_PROJECT_NAME
+# The release tag, from the workflow that builds the image. .git stays out of
+# the context (.dockerignore), so without it the binary calls itself "devel" —
+# in serverInfo, in the User-Agent and as the Sentry release.
+ARG VERSION=""
 RUN apk add --no-cache git
 COPY . /build
 WORKDIR /build
-RUN CGO_ENABLED=0 go build -mod=vendor -o $CI_PROJECT_NAME ./cmd/$CI_PROJECT_NAME
+RUN CGO_ENABLED=0 go build -mod=vendor \
+    -ldflags "-X github.com/vmkteam/ringsrv/pkg/app.version=${VERSION}" \
+    -o $CI_PROJECT_NAME ./cmd/$CI_PROJECT_NAME
 
 # Stage 2: Fetch the AST engine (S-58). Downloading happens here so that neither
 # curl nor the checksum file end up in the final image. The published binary is

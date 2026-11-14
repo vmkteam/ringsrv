@@ -55,6 +55,9 @@ jobs:
         with:
           context: .
           file: deployments/Dockerfile
+          # The tag the image is built from becomes the binary's version.
+          build-args: |
+            VERSION=${{ inputs.tag || github.ref_name }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

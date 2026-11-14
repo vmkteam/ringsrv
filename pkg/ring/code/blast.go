@@ -3,6 +3,7 @@ package code
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -536,8 +537,7 @@ func changeAt(h git.Hunk, n *codegraph.Node) string {
 // closely.
 func commitTasks(repo Repo, commits []git.Commit) map[string]string {
 	res := make(map[string]string)
-	for i := len(commits) - 1; i >= 0; i-- {
-		c := commits[i]
+	for _, c := range slices.Backward(commits) {
 		task := repo.Cfg.TaskID(c.Subject)
 		for _, f := range c.Files {
 			res[f] = task

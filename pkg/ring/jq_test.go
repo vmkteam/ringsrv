@@ -3,8 +3,11 @@ package ring
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -96,6 +99,41 @@ func TestTopLevelKeys(t *testing.T) {
 	assert.Nil(t, TopLevelKeys([]byte("not json")))
 }
 
+// The shape of a Slack search reaches the field a filter needs in one answer:
+// top-level keys alone would only say "results" and cost another call.
+func TestRawShape(t *testing.T) {
+	t.Parallel()
+	slack := `{"ok":true,"query":"deploy","results":{"messages":[{"content":"x","author_name":"Ann","channel":{"id":"C1"}}]},"response_metadata":{"next_cursor":""}}`
+	assert.Equal(t, []string{
+		"ok", "query",
+		"response_metadata", "response_metadata.next_cursor",
+		"results", "results.messages", "results.messages[].author_name", "results.messages[].channel", "results.messages[].content",
+	}, RawShape([]byte(slack)), "three levels deep, brackets are not a level")
+
+	assert.Equal(t, []string{"[].id", "[].tags", "[].tags[].key"}, RawShape([]byte(`[{"id":1,"tags":[{"key":"a"}]},{"id":2}]`)),
+		"an array body is read through its first element")
+	assert.Empty(t, RawShape([]byte(`[]`)))
+	assert.Nil(t, RawShape([]byte("not json")))
+
+	wide := map[string]int{}
+	for i := range 100 {
+		wide[fmt.Sprintf("k%03d", i)] = i
+	}
+	body, err := json.Marshal(wide)
+	require.NoError(t, err)
+	assert.Len(t, RawShape(body), rawShapePaths, "a wide object is cut, not dumped")
+}
+
+func TestIsEmptyResult(t *testing.T) {
+	t.Parallel()
+	for _, v := range []any{nil, []any{}, map[string]any{}, ""} {
+		assert.True(t, IsEmptyResult(v), "%#v", v)
+	}
+	for _, v := range []any{false, 0, "x", []any{nil}, map[string]any{"a": nil}} {
+		assert.False(t, IsEmptyResult(v), "%#v", v)
+	}
+}
+
 // gojq has no memory limit. The two cheap ways to ask for a gigabyte — string
 // repetition and range — are refused or capped before anything runs; the
 // internals the prelude wraps are not callable from an expression.
@@ -159,4 +197,26 @@ func TestApplyJQ_ExactIntegers(t *testing.T) {
 
 	_, err = ApplyJQ(t.Context(), "", []byte(`{"a":1} {"b":2}`), time.Second)
 	require.ErrorIs(t, err, ErrJQNotJSON, "two documents are not one")
+}
+
+// Errors answered with 200: Slack's convention and JSON-RPC's, one call or a
+// batch. A body that merely has a field called error is not one.
+func TestAnsweredError(t *testing.T) {
+	t.Parallel()
+	for body, want := range map[string]string{
+		`{"ok":false,"error":"missing_scope","needed":"channels:history"}`:                                              "missing_scope",
+		`{"ok":true,"messages":[]}`:                                                                                     "",
+		`{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}`:                                 "-32601 Method not found",
+		`{"jsonrpc":"2.0","id":1,"result":{"ok":true},"error":null}`:                                                    "",
+		`[{"jsonrpc":"2.0","id":1,"result":1},{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"bad params"}}]`: "-32602 bad params",
+		`{"error":"a field of the data, not a refusal","rows":[]}`:                                                      "",
+		`{"data":{"result":[]},"status":"success"}`:                                                                     "",
+		`not json`: "",
+	} {
+		assert.Equal(t, want, AnsweredError([]byte(body)), body)
+	}
+	long := `{"ok":false,"error":"` + strings.Repeat("я", 300) + `"}`
+	got := AnsweredError([]byte(long))
+	assert.LessOrEqual(t, len(got), maxAnsweredError)
+	assert.True(t, utf8.ValidString(got), "cut on a rune boundary")
 }

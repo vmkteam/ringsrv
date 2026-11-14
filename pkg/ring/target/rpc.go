@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 )
 
@@ -28,11 +29,20 @@ type rpcRequest struct {
 // what the allowlist cannot read, it cannot allow. The error says which
 // method it stopped at, because on a one-path API the method is what the
 // caller has to fix.
-func (p *Profile) CheckRPC(body string) error {
+//
+// A GET or HEAD without a body is not a JSON-RPC request and passes: the path
+// allowlist has already decided it. Such a profile serves its schema and
+// documents next to the endpoint (openrpc.json, a markdown export), and every
+// read of those used to be refused for the body it had no reason to carry. A
+// GET that does carry a body is checked like any other.
+func (p *Profile) CheckRPC(method, body string) error {
 	if !p.RPCGuarded() {
 		return nil
 	}
 	raw := strings.TrimSpace(body)
+	if raw == "" && (strings.EqualFold(method, http.MethodGet) || strings.EqualFold(method, http.MethodHead)) {
+		return nil
+	}
 	if raw == "" {
 		return errors.New("body is empty — the target takes JSON-RPC requests")
 	}

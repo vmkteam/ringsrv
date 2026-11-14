@@ -158,6 +158,7 @@ Write              = true                         # only roles with AllowWrite s
 | `AllowPaths` | yes | regular expressions, **each anchored with `^` and ended explicitly: `$` or `/`**; an optional method prefix: `"POST ^/api/ds/query$"` |
 | `DefaultJQ` | — | the default filter; a call may override it, and `jq: "."` returns the raw body. Compiled at load; an answer filtered by it is marked `default_jq: true` |
 | `MaxBytes` | — | the answer ceiling for this target; 0 → the instance's `Limits.MaxBytes`. A call's argument may not exceed 262144 |
+| `Timeout` | — | how long one call to this target may take, the answer read included, as a duration (`"60s"`); 0 → the instance's `Limits.UpstreamTimeout`. At most 90s: the server cuts the answer to the client at two minutes. For an API whose honest answer is slow — a log query over a day — not for one that hangs |
 | `TimeParams` / `TimeFormat` | — | the query parameters where `now-1h` / `now-24h` / `now-7d` are expanded by the server, and into what: `unix`, `unix_ms`, `unix_ns`, `rfc3339` |
 | `TimeBodyParams` | — | the same for a JSON body, by dotted paths (`params.start`); the unix formats become a number and `rfc3339` a string; a batch is handled element by element. Requires `TimeFormat` and a method with a body. An entry may name its own format after a colon — `"params.filter.from:rfc3339"` — for an upstream whose windows differ in format; then `TimeFormat` is only needed by the entries without a suffix |
 | `AllowRPCMethods` | — | JSON-RPC behind a single path: the methods a body may carry (an object or a batch, case-insensitive); everything else is `RPCMethodNotAllowed`. On a `ReadOnlyPost` profile a known writing method is not accepted |
@@ -224,6 +225,75 @@ not followed: a 3xx is returned to the model with its `Location`.
 annotation creation and the datasource proxy against every profile: a pattern
 that lets one of them through fails the load, however well-meant the widening
 was.
+
+**A chat kept to public channels: Slack.** Here the token holds the line: a
+user token with public-only scopes (`search:read.public`, `channels:history`,
+`channels:read`, `users:read`, `files:read`) reads no private channel and no
+direct message, so the profile needs no `PublicOnly`. Search goes through
+`assistant.search.context`, which also finds replies inside threads. The
+default filter matters more here than anywhere: Slack answers errors with HTTP
+200 and `ok: false`, a bot's alert keeps its text in `attachments`, and a
+message posted through blocks has an empty `text`. The filter below lifts the
+error, keeps the attachments, and joins the text of the blocks when `text` is
+empty — without it the model writes that jq itself on every other call. The
+profile, as `pkg/ring/md/md/targets/slack.md` is checked against it:
+
+```toml
+[Profiles.slack]
+Description  = "prod · Slack: поиск сообщений, тредов и вложенных файлов в публичных каналах"
+BaseURL      = "https://slack.com"
+Headers      = ["Authorization: Bearer {{ .slackUserToken }}"]
+AllowMethods = ["GET"]
+AllowPaths   = [
+  "^/api/assistant\\.search\\.context$",
+  "^/api/conversations\\.(replies|history|list|info)$",
+  "^/api/users\\.info$",
+  "^/files/download$",
+]
+AllowQueryParams = [
+  "query", "sort", "sort_dir", "after", "before", "highlight", "include_bots",
+  "include_context_messages", "disable_semantic_search", "team_id",
+  "channel", "ts", "limit<=1000", "cursor", "oldest", "latest", "inclusive",
+  "types", "exclude_archived", "include_num_members", "include_all_metadata", "include_locale", "user",
+  "file", "offset", "grep", "sheet", "entry",
+]
+Files        = "slack"
+TimeParams   = ["oldest", "latest", "after", "before"]
+TimeFormat   = "unix"
+DefaultJQ    = '''
+def cur: .response_metadata.next_cursor // null;
+def btext: if type == "array" then .[] | btext
+  elif type != "object" then empty
+  elif (.elements | type) == "array" and any(.elements[]; (.text? | type) == "string") then [.elements[] | .text? | strings] | join("")
+  elif (.text | type) == "string" then .text
+  else (.text, .fields, .elements) | btext end;
+if .ok == false then ({error, needed, provided} | with_entries(select(.value != null)))
+elif (.results | type) == "object" then
+  {matches: [(.results.messages // [])[]
+    | {channel: .channel_id, name: .channel_name, user: (if .is_author_bot then "bot" else .author_name end),
+       ts: .message_ts, thread_ts: (first(.permalink // "" | capture("thread_ts=(?<t>[0-9.]+)").t) // null),
+       reply_count, text: .content, permalink}
+      + (if .context_messages then {context: (.context_messages | map_values(map({user: .author_name, ts, text})))} else {} end)],
+   next_cursor: cur}
+elif (.messages | type) == "array" then
+  {messages: [.messages[] | {user, ts, thread_ts, reply_count, text}
+    + (if .files then {files: [.files[] | {id, name, filetype, size}]} else {} end)
+    + (if .attachments then {attachments: [.attachments[]
+        | {pretext, title, text, fields: (if .fields then [.fields[] | {title, value}] else null end)}
+        | with_entries(select(.value != null and .value != ""))]} else {} end)
+    + (if (.text // "") == "" and .blocks then {blocks: ([.blocks[] | btext] | join("\n"))} else {} end)],
+   has_more, next_cursor: cur}
+elif (.channels | type) == "array" then
+  {channels: [.channels[] | {id, name, is_private, is_archived, num_members, purpose: .purpose.value}], next_cursor: cur}
+elif (.channel | type) == "object" then
+  {channel: (.channel | {id, name, is_private, is_archived, num_members, topic: .topic.value, purpose: .purpose.value})}
+elif (.user | type) == "object" then
+  {user: (.user | {id, name, real_name, display_name: .profile.display_name, deleted, is_bot})}
+else . end
+'''
+Redact       = "warn"
+RedactRules  = ["email", "phone", "card", "token", "jwt", "pem", "ip"]
+```
 
 **A chat kept to public channels: Mattermost.** A Mattermost token has no
 scopes: the account reads every private channel it was added to and every

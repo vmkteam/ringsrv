@@ -302,8 +302,7 @@ func (m *Manager) State(name string) (State, bool) {
 func (m *Manager) Prove(ctx context.Context) error {
 	var errs []error
 	for name, err := range m.proveAll(ctx) {
-		var w *writableError
-		if errors.As(err, &w) {
+		if w, ok := errors.AsType[*writableError](err); ok {
 			errs = append(errs, fmt.Errorf("database %q is reachable but not read-only: %s", name, w.reason))
 			continue
 		}

@@ -56,6 +56,9 @@ var (
 	// on: for a large repository it outlives a cron tick and a question, and a
 	// bare "deadline exceeded" read as a failed mirror.
 	ErrCloning = errors.New("git: first clone still in progress")
+	// ErrTimeout means a git command ran past its deadline and was killed.
+	// The text reads inside the message: "git: git grep timed out after 30s".
+	ErrTimeout = errors.New("timed out")
 )
 
 // shaRe is what a ref may look like when it is not a known branch name.
@@ -142,7 +145,7 @@ func (s *Store) runEnvTimeout(ctx context.Context, timeout time.Duration, dir st
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("git: git %s timed out after %s", args[0], timeout)
+			return nil, fmt.Errorf("git: git %s %w after %s", args[0], ErrTimeout, timeout)
 		}
 		return nil, fmt.Errorf("git: git %s: %w: %s", args[0], err, clip(stderr.String()))
 	}
@@ -154,6 +157,13 @@ func (s *Store) timeout() time.Duration {
 		return s.opts.Timeout
 	}
 	return DefaultTimeout
+}
+
+func (s *Store) grepTimeout() time.Duration {
+	if s.opts.GrepTimeout > 0 {
+		return s.opts.GrepTimeout
+	}
+	return DefaultGrepTimeout
 }
 
 func (s *Store) cloneTimeout() time.Duration {

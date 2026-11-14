@@ -48,6 +48,7 @@ const (
 	dialTimeout          = 5 * time.Second
 	sqlstateTimeout      = "57014" // query_canceled: statement_timeout fired
 	sqlstateUnknownTable = "42P01" // undefined_table
+	sqlstateNoPrivilege  = "42501" // insufficient_privilege
 	defaultSchema        = "public"
 )
 
@@ -241,8 +242,7 @@ func prove(ctx context.Context, q orm.DB) (dbq.Proof, error) {
 // not a fault of the network.
 func (c *Client) ProveReadOnly(ctx context.Context) (dbq.Proof, error) {
 	proof, err := prove(ctx, c.db)
-	var refused *dbq.NotReadOnlyError
-	if errors.As(err, &refused) {
+	if refused, ok := errors.AsType[*dbq.NotReadOnlyError](err); ok {
 		return dbq.Proof{Reason: refused.Reason}, nil
 	}
 	if err != nil {
@@ -321,17 +321,18 @@ func (c *Client) inTx(ctx context.Context, timeout time.Duration, caller string,
 // Close releases the pool.
 func (c *Client) Close() error { return c.db.Close() }
 
-// classify marks what the domain tells apart: statement_timeout (57014) and an
-// unknown table (42P01) by their codes, socket and context timeouts by
+// classify marks what the domain tells apart: statement_timeout (57014), an
+// unknown table (42P01) and a missing privilege (42501) by their codes, socket and context timeouts by
 // dbq.WrapTimeout.
 func classify(err error) error {
-	var pgErr pg.Error
-	if errors.As(err, &pgErr) {
+	if pgErr, ok := errors.AsType[pg.Error](err); ok {
 		switch pgErr.Field('C') {
 		case sqlstateTimeout:
 			return fmt.Errorf("%w: %s", dbq.ErrTimeout, pgErr.Field('M'))
 		case sqlstateUnknownTable:
 			return fmt.Errorf("%w: %s", dbq.ErrUnknownTable, pgErr.Field('M'))
+		case sqlstateNoPrivilege:
+			return fmt.Errorf("%w: %s", dbq.ErrPermission, pgErr.Field('M'))
 		}
 	}
 	return dbq.WrapTimeout(err)

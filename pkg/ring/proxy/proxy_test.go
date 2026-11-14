@@ -186,3 +186,55 @@ Targets     = ["rpc"]
 	require.Nil(t, callErr)
 	assert.Regexp(t, `^\{"method":"q","params":\{"start":\d{10},"untouched":"now-1h"\}\}$`, got)
 }
+
+// An own jq written for the default's shape selects nothing on the raw body.
+// The answer then says what the raw body has; a filter that found something,
+// the default and "." say nothing extra.
+func TestDo_RawShapeOnEmptyOwnJQ(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"results":{"messages":[{"content":"deploy"}]}}`))
+	}))
+	t.Cleanup(srv.Close)
+	prof := profileFor(t, srv.URL, "off")
+
+	call := func(jq string) *Answer {
+		t.Helper()
+		ans, callErr := manager().Do(context.Background(), prof, Request{Method: http.MethodGet, Path: "/api/x", JQ: jq})
+		require.Nil(t, callErr)
+		return ans
+	}
+
+	empty := call("[.matches[]?]")
+	assert.Equal(t, []any{}, empty.Data)
+	assert.Equal(t, []string{"ok", "results", "results.messages", "results.messages[].content"}, empty.RawShape)
+
+	assert.Contains(t, call(".nothing").RawShape, "results.messages[].content", "null is empty too")
+	assert.Nil(t, call("[.results.messages[].content]").RawShape, "a filter that found something")
+	assert.Nil(t, call(".").RawShape, "the raw body itself")
+	assert.Nil(t, call("").RawShape, "no own jq")
+}
+
+// Key names are text of the answer too: an object keyed by an e-mail would
+// carry it past a redacting profile in raw_shape or in JQFailed's keys.
+func TestDo_RedactsKeyNames(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"users":{"ann@example.com":{"id":1}},"ann@example.com":true}`))
+	}))
+	t.Cleanup(srv.Close)
+	prof := profileFor(t, srv.URL, "redact")
+
+	ans, callErr := manager().Do(context.Background(), prof, Request{Method: http.MethodGet, Path: "/api/x", JQ: "[.nothing[]?]"})
+	require.Nil(t, callErr)
+	require.NotEmpty(t, ans.RawShape)
+	assert.NotContains(t, strings.Join(ans.RawShape, " "), "ann@example.com")
+	assert.Contains(t, ans.RawShape, "users")
+
+	_, callErr = manager().Do(context.Background(), prof, Request{Method: http.MethodGet, Path: "/api/x", JQ: ".users | error"})
+	require.NotNil(t, callErr)
+	require.NotEmpty(t, callErr.Keys)
+	assert.NotContains(t, strings.Join(callErr.Keys, " "), "ann@example.com")
+}

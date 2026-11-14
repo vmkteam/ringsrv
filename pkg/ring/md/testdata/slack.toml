@@ -1,0 +1,54 @@
+[Profiles.slack]
+Description  = "prod · Slack: поиск сообщений, тредов и вложенных файлов в публичных каналах"
+BaseURL      = "https://slack.com"
+Headers      = ["Authorization: Bearer {{ .slackUserToken }}"]
+AllowMethods = ["GET"]
+AllowPaths   = [
+  "^/api/assistant\\.search\\.context$",
+  "^/api/conversations\\.(replies|history|list|info)$",
+  "^/api/users\\.info$",
+  "^/files/download$",
+]
+AllowQueryParams = [
+  "query", "sort", "sort_dir", "after", "before", "highlight", "include_bots",
+  "include_context_messages", "disable_semantic_search", "team_id",
+  "channel", "ts", "limit<=1000", "cursor", "oldest", "latest", "inclusive",
+  "types", "exclude_archived", "include_num_members", "include_all_metadata", "include_locale", "user",
+  "file", "offset", "grep", "sheet", "entry",
+]
+Files        = "slack"
+TimeParams   = ["oldest", "latest", "after", "before"]
+TimeFormat   = "unix"
+DefaultJQ    = '''
+def cur: .response_metadata.next_cursor // null;
+def btext: if type == "array" then .[] | btext
+  elif type != "object" then empty
+  elif (.elements | type) == "array" and any(.elements[]; (.text? | type) == "string") then [.elements[] | .text? | strings] | join("")
+  elif (.text | type) == "string" then .text
+  else (.text, .fields, .elements) | btext end;
+if .ok == false then ({error, needed, provided} | with_entries(select(.value != null)))
+elif (.results | type) == "object" then
+  {matches: [(.results.messages // [])[]
+    | {channel: .channel_id, name: .channel_name, user: (if .is_author_bot then "bot" else .author_name end),
+       ts: .message_ts, thread_ts: (first(.permalink // "" | capture("thread_ts=(?<t>[0-9.]+)").t) // null),
+       reply_count, text: .content, permalink}
+      + (if .context_messages then {context: (.context_messages | map_values(map({user: .author_name, ts, text})))} else {} end)],
+   next_cursor: cur}
+elif (.messages | type) == "array" then
+  {messages: [.messages[] | {user, ts, thread_ts, reply_count, text}
+    + (if .files then {files: [.files[] | {id, name, filetype, size}]} else {} end)
+    + (if .attachments then {attachments: [.attachments[]
+        | {pretext, title, text, fields: (if .fields then [.fields[] | {title, value}] else null end)}
+        | with_entries(select(.value != null and .value != ""))]} else {} end)
+    + (if (.text // "") == "" and .blocks then {blocks: ([.blocks[] | btext] | join("\n"))} else {} end)],
+   has_more, next_cursor: cur}
+elif (.channels | type) == "array" then
+  {channels: [.channels[] | {id, name, is_private, is_archived, num_members, purpose: .purpose.value}], next_cursor: cur}
+elif (.channel | type) == "object" then
+  {channel: (.channel | {id, name, is_private, is_archived, num_members, topic: .topic.value, purpose: .purpose.value})}
+elif (.user | type) == "object" then
+  {user: (.user | {id, name, real_name, display_name: .profile.display_name, deleted, is_bot})}
+else . end
+'''
+Redact       = "warn"
+RedactRules  = ["email", "phone", "card", "token", "jwt", "pem", "ip"]

@@ -13,9 +13,17 @@ description: Slack через api_call — поиск сообщений, чте
 `matches` с полями `channel` (id), `name`, `user` (имя автора, у бота — `bot`), `ts`,
 `thread_ts`, `reply_count`, `text`, `permalink`, а с `include_context_messages=true` ещё
 `context` — соседние сообщения `before` и `after`; у треда и истории — `user` (id), `ts`,
-`thread_ts`, `reply_count`, `text` и `files` (`id`, `name`, `filetype`, `size`), если к
-сообщению приложены файлы. Разметка `blocks` и реакции отбрасываются. Нужны — передайте
-свой `jq`.
+`thread_ts`, `reply_count`, `text` и, если они есть, `files` (`id`, `name`, `filetype`,
+`size`) и `attachments` (`pretext`, `title`, `text`, `fields`) — в них боты и алерты
+пишут суть. Если `text` пуст, а сообщение собрано из блоков, их текст приходит одной
+строкой в `blocks`. Реакции и разметка отбрасываются.
+
+**Свой `jq` заменяет фильтр и видит сырое тело Slack**, а не форму выше. У поиска
+сообщения лежат в `.results.messages[]` с полями `content`, `author_name`, `channel_id`,
+`channel_name`, `message_ts`, `permalink`; у треда и истории — в `.messages[]` с `text`,
+`user`, `ts`, `files`, `attachments`, `blocks`. Фильтр, написанный под форму выше
+(`.matches[]`), на сыром теле вернёт пустоту, а не ошибку; такой ответ приходит с
+`raw_shape` — путями сырого тела, по ним фильтр и правится.
 
 **На этом таргете включена редакция PII** в режиме `warn`: тело не меняется, список
 сработавших правил приезжает в поле `redacted`.

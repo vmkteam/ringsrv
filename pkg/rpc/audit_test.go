@@ -399,3 +399,30 @@ func TestAudit_CodeTools(t *testing.T) {
 	assert.Equal(t, false, whole["truncated"])
 	assert.Less(t, cut["bytes_out"], whole["bytes_out"])
 }
+
+// Slack refuses with HTTP 200 and ok:false. The model still gets the answer, but
+// the audit has to say it was a refusal: by status alone a token missing a
+// scope reads as a run of successes.
+func TestAudit_ErrorAnsweredWithOK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":false,"error":"missing_scope","needed":"channels:history"}`))
+	}))
+	defer srv.Close()
+
+	var res mcp.ToolCallResult
+	recs := captureLog(t, func(l embedlog.Logger) {
+		var err error
+		res, err = auditService(t, srv.URL, "", l).Call(ctxWithGroups("ringsrv-users"), ToolAPICall, apiArgs(map[string]any{
+			"target": "test", "method": "GET", "path": "/api/v1/query",
+		}))
+		require.NoError(t, err)
+	})
+	assert.Contains(t, res.Content[0].Text, "missing_scope", "the answer still reaches the model")
+
+	records := itemRecords(recs)
+	require.Len(t, records, 1)
+	assert.Equal(t, audit.DecisionAllow, records[0]["decision"])
+	assert.EqualValues(t, http.StatusOK, records[0]["upstream_status"])
+	assert.Equal(t, "missing_scope", records[0]["upstream_error"])
+}
