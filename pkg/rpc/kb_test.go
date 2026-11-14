@@ -8,10 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vmkteam/ringsrv/pkg/client/git"
 	"github.com/vmkteam/ringsrv/pkg/ring"
 	"github.com/vmkteam/ringsrv/pkg/ring/dbq"
 	"github.com/vmkteam/ringsrv/pkg/ring/dbq/dbqtest"
 	"github.com/vmkteam/ringsrv/pkg/ring/kb"
+	"github.com/vmkteam/ringsrv/pkg/ring/md"
 	"github.com/vmkteam/ringsrv/pkg/ring/target"
 
 	"github.com/stretchr/testify/assert"
@@ -393,4 +395,167 @@ func TestDBIntrospect_KnowledgeNotes(t *testing.T) {
 	require.Len(t, pgList.Tables, 1)
 	assert.Equal(t, "schema/app/users", pgList.Tables[0].Doc)
 	assert.Empty(t, pgList.Tables[0].Purpose, "the database's comment wins")
+}
+
+// analystTools is the analytics instance: databases alone, the analyst role,
+// and a pack when one is given.
+func analystTools(t *testing.T, pack bool) ToolsService {
+	t.Helper()
+	cat, err := target.Parse([]byte(analystCatalogTOML))
+	require.NoError(t, err)
+	m := dbq.NewManager(dbq.Options{JQTimeout: time.Second, MaxBytes: 1 << 20})
+	for name, d := range cat.Databases {
+		require.NoError(t, m.Add(dbq.Target{Name: name, Driver: d.Driver, Client: dbqtest.New(nil), MaxRows: 1, Timeout: time.Second, Redact: d.Redact, Password: d.Password, Database: d.Database, Schemas: d.Schemas}))
+	}
+	deps := ToolsDeps{Targets: cat, DB: m, Docs: testDocs(t), Logger: embedlog.Logger{}}
+	if pack {
+		deps.KB = loadKB(t, cat, kbFiles())
+	}
+	return NewToolsService(deps)
+}
+
+// The help description names what the instance has: an instance of databases
+// alone says nothing of api_call, code or files.
+func TestHelp_DescriptionFollowsTheInstance(t *testing.T) {
+	t.Parallel()
+
+	plain := analystTools(t, false).helpDescription()
+	assert.Contains(t, plain, "инструментов (db)")
+	for _, absent := range []string{"api_call", "code", "files", "таргет", "база знаний"} {
+		assert.NotContains(t, plain, absent)
+	}
+
+	withPack := analystTools(t, true).helpDescription()
+	assert.Contains(t, withPack, "инструментов (db). Здесь же база знаний инстанса")
+	assert.NotContains(t, withPack, "api_call")
+
+	// A catalogue with profiles, repositories and databases names all of it.
+	cat := testCatalog(t)
+	m := dbq.NewManager(dbq.Options{})
+	for name, d := range cat.Databases {
+		require.NoError(t, m.Add(dbq.Target{Name: name, Driver: d.Driver, Client: dbqtest.New(nil), MaxRows: 1, Timeout: time.Second}))
+	}
+	full := NewToolsService(ToolsDeps{
+		Targets: cat, DB: m, Docs: testDocs(t),
+		Repos: git.New(git.Options{ReposDir: t.TempDir(), WorktreesDir: t.TempDir()}),
+	}).helpDescription()
+	assert.Contains(t, full, "таргетов api_call или инструментов (code")
+	assert.Contains(t, full, "Прочитай перед первым вызовом к таргету.")
+
+	// Without databases wired in, the db family is not the instance's either.
+	bare := NewToolsService(ToolsDeps{Targets: cat, Docs: testDocs(t)}).helpDescription()
+	assert.NotContains(t, bare, "db")
+}
+
+// analystMCP is the analytics instance served over MCP.
+func analystMCP(t *testing.T) *mcpkit.Server {
+	t.Helper()
+	tools := analystTools(t, true)
+	return mcpkit.NewServer(NewMCP(MCPDeps{
+		Info: mcp.ServerInfo{Name: "ringsrv", Version: "test"}, Docs: testDocs(t), KB: tools.kb,
+		Targets: tools.targets, DB: tools.db, Logger: embedlog.Logger{}, IsDevel: true,
+	}), embedlog.Logger{})
+}
+
+func promptNames(t *testing.T, srv *mcpkit.Server) []string {
+	t.Helper()
+	res := call(t, srv, "prompts/list", nil, "")
+	entries, _ := res["prompts"].([]any)
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		m, _ := e.(map[string]any)
+		name, _ := m["name"].(string)
+		names = append(names, name)
+	}
+	return names
+}
+
+// The built-in prompts are scenarios over Sentry, metrics and code. An instance
+// that has none of it offers the pack's prompts alone.
+func TestPrompts_FollowTheInstance(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, []string{"report"}, promptNames(t, analystMCP(t)))
+
+	cat := testCatalog(t)
+	full := mcpkit.NewServer(NewMCP(MCPDeps{
+		Info: mcp.ServerInfo{Name: "ringsrv", Version: "test"}, Docs: testDocs(t), Targets: cat,
+		Repos: git.New(git.Options{ReposDir: t.TempDir(), WorktreesDir: t.TempDir()}), Logger: embedlog.Logger{},
+	}), embedlog.Logger{})
+	assert.Equal(t, []string{"errors", "explain", "incident-triage", "investigate"}, promptNames(t, full))
+
+	noCode := mcpkit.NewServer(NewMCP(MCPDeps{
+		Info: mcp.ServerInfo{Name: "ringsrv", Version: "test"}, Docs: testDocs(t), Targets: cat, Logger: embedlog.Logger{},
+	}), embedlog.Logger{})
+	assert.NotContains(t, promptNames(t, noCode), "explain", "explain requires the code")
+
+	// A hidden prompt is unknown to prompts/get too, not just missing from the list.
+	tools := analystTools(t, true)
+	c := newCatalogue(testDocs(t), md.URIScheme, tools.kb, tools.surface().builtinFilter(embedlog.Logger{}))
+	_, _, err := c.Render("investigate", map[string]string{"symptom": "x"})
+	require.ErrorIs(t, err, mcp.ErrInvalidParams)
+	_, text, err := c.Render("report", nil)
+	require.NoError(t, err)
+	assert.Contains(t, text, "Собери отчёт")
+}
+
+func resourceURIs(t *testing.T, srv *mcpkit.Server) []string {
+	t.Helper()
+	res := call(t, srv, "resources/list", nil, "")
+	items, _ := res["resources"].([]any)
+	uris := make([]string, 0, len(items))
+	for _, it := range items {
+		m, _ := it.(map[string]any)
+		uri, _ := m["uri"].(string)
+		uris = append(uris, uri)
+	}
+	return uris
+}
+
+// resources/list lists the built-in sheets of what the catalogue has: a target
+// sheet for each profile, a tool sheet for each family the instance serves.
+func TestResources_FollowTheCatalogue(t *testing.T) {
+	t.Parallel()
+	var builtin []string
+	for _, uri := range resourceURIs(t, analystMCP(t)) {
+		if strings.HasPrefix(uri, md.URIScheme) {
+			builtin = append(builtin, uri)
+		}
+	}
+	assert.Equal(t, []string{md.URIScheme + "tools/db.md"}, builtin, "databases alone: the db sheet and nothing else")
+
+	cat := testCatalog(t)
+	m := dbq.NewManager(dbq.Options{})
+	for name, d := range cat.Databases {
+		require.NoError(t, m.Add(dbq.Target{Name: name, Driver: d.Driver, Client: dbqtest.New(nil), MaxRows: 1, Timeout: time.Second}))
+	}
+	full := resourceURIs(t, mcpkit.NewServer(NewMCP(MCPDeps{
+		Info: mcp.ServerInfo{Name: "ringsrv", Version: "test"}, Docs: testDocs(t), Targets: cat, DB: m,
+		Repos: git.New(git.Options{ReposDir: t.TempDir(), WorktreesDir: t.TempDir()}), Logger: embedlog.Logger{},
+	}), embedlog.Logger{}))
+	for _, name := range []string{"targets/prom.md", "targets/slack.md", "tools/code.md", "tools/db.md", "tools/files.md"} {
+		assert.Contains(t, full, md.URIScheme+name)
+	}
+	assert.NotContains(t, full, md.URIScheme+"targets/mattermost.md", "no such profile in this catalogue")
+
+	// What the list hides, read refuses: the two say the same thing.
+	tools := analystTools(t, true)
+	c := newCatalogue(testDocs(t), md.URIScheme, tools.kb, tools.surface().builtinFilter(embedlog.Logger{}))
+	_, _, err := c.Read(md.URIScheme + "targets/prom.md")
+	require.ErrorIs(t, err, mcp.ErrInvalidParams)
+	_, _, err = c.Read("targets/prom.md")
+	require.ErrorIs(t, err, mcp.ErrInvalidParams, "a bare path too")
+	data, _, err := c.Read(md.URIScheme + "tools/db.md")
+	require.NoError(t, err)
+	assert.NotEmpty(t, data)
+}
+
+// db_introspect promises the code pointer only where a database names a
+// repository, and the note only where the pack has notes.
+func TestDBIntrospect_DescriptionFollowsTheInstance(t *testing.T) {
+	t.Parallel()
+	plain := analystTools(t, false).dbIntrospectDescription()
+	assert.NotContains(t, plain, "указатель на код", "no database names a repository")
+	assert.NotContains(t, plain, "doc")
+	assert.Contains(t, analystTools(t, true).dbIntrospectDescription(), "описание из базы знаний (doc)")
+	assert.Contains(t, kbFixture(t).dbIntrospectDescription(), "указатель на код", "pg names its repositories")
 }

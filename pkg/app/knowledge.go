@@ -73,6 +73,12 @@ func (a *App) checkAnnotations(ctx context.Context) {
 			continue
 		}
 		seen[tgt] = true
+		// An unproven base answers every table with the same refusal; one line
+		// says it, twelve say it twelve times.
+		if st, ok := a.db.State(tgt); !ok || !st.Proven {
+			a.Print(ctx, "table notes not checked: database not proven", "target", tgt, "notes", len(a.kb.Tables(tgt)))
+			continue
+		}
 		total := 0
 		for _, note := range a.kb.Tables(tgt) {
 			schema, err := a.db.Introspect(ctx, tgt, note.Table)

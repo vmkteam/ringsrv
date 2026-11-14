@@ -103,30 +103,33 @@ func NewMCP(d MCPDeps) *zenrpc.Server {
 		CacheHint:    catalogueCache,
 	}
 
+	tools := NewToolsService(ToolsDeps{
+		Targets:       d.Targets,
+		Upstream:      d.Upstream,
+		Repos:         d.Repos,
+		Graph:         d.Graph,
+		DB:            d.DB,
+		Docs:          d.Docs,
+		KB:            d.KB,
+		MaxBytes:      d.MaxBytes,
+		MaxConcurrent: d.MaxConcurrent,
+		JQTimeout:     d.JQTimeout,
+		Sessions:      d.Sessions,
+		IsDevel:       d.IsDevel,
+		Logger:        d.Logger,
+	})
+
 	// The built-in tree and the knowledge pack, each under its own scheme. The
-	// pack is the same for everyone on the instance, so the cache hint holds.
-	cat := newCatalogue(d.Docs, md.URIScheme, d.KB)
+	// built-in texts follow what the instance has; both are the same for
+	// everyone on the instance, so the cache hint holds.
+	cat := newCatalogue(d.Docs, md.URIScheme, d.KB, tools.surface().builtinFilter(d.Logger))
 
 	srv.RegisterAll(map[string]zenrpc.Invoker{
 		// Both eras on one endpoint: initialize for the clients that still open
 		// with a handshake, server/discover for the ones that no longer do.
 		"":                     mcpkit.NewInitService(deps),
 		mcpkit.NamespaceServer: mcpkit.NewDiscoverService(deps),
-		mcpkit.NamespaceTools: NewToolsService(ToolsDeps{
-			Targets:       d.Targets,
-			Upstream:      d.Upstream,
-			Repos:         d.Repos,
-			Graph:         d.Graph,
-			DB:            d.DB,
-			Docs:          d.Docs,
-			KB:            d.KB,
-			MaxBytes:      d.MaxBytes,
-			MaxConcurrent: d.MaxConcurrent,
-			JQTimeout:     d.JQTimeout,
-			Sessions:      d.Sessions,
-			IsDevel:       d.IsDevel,
-			Logger:        d.Logger,
-		}),
+		mcpkit.NamespaceTools:  tools,
 		// The catalogue is cacheable and the same for everyone: the markdown is
 		// embedded at build time. tools/list is not — it is filtered by role, and
 		// a public cache would hand one caller the tools of another.

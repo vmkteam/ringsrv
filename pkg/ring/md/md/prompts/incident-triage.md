@@ -1,6 +1,7 @@
 ---
 name: incident-triage
 description: "Быстрый триаж: инцидент или нет, кого будить, что говорить в канал. Только чтение, четыре шага, десять минут."
+requires: [api_call]
 arguments:
   - name: service
     description: Сервис под подозрением (он же job в Prometheus и slug в Sentry)

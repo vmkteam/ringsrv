@@ -1,6 +1,7 @@
 ---
 name: investigate
 description: Расследование инцидента от симптома до причины — Sentry, метрики, логи, релиз; на выходе диагноз с доказательствами.
+requires: [api_call]
 arguments:
   - name: symptom
     description: Что наблюдается — текст ошибки, имя сервиса, ссылка на issue или жалоба

@@ -548,7 +548,11 @@ so that "what group X sees" is read in one place and shows up in a diff.
 - `MaxWrites` caps writes per session; `0` means no cap, and it only makes sense
   together with `AllowWrite`;
 - the code tools are visible to a role only with repositories, and the data
-  tools only with databases: the listing and the call say the same thing.
+  tools only with databases: the listing and the call say the same thing;
+- `api_call` is visible only to a role with at least one profile among its
+  targets: on a catalogue of databases alone `"*"` does not bring it along;
+- `help` is not a tool a role grants and is refused in `Tools`: it is offered
+  whenever the role sees any other tool.
 
 ## `[Repos.<name>]` — a repository
 
@@ -595,6 +599,179 @@ rpc    = "pkg/rpc"
 
 The section name becomes the mirror's directory: letters, digits, `._-`, no `/`.
 
+## The knowledge pack — `[Knowledge]` in the instance config
+
+Since v0.1.0.
+
+The built-in cheat sheets teach a dialect and an API; they cannot say what the
+data of a particular instance means — that revenue is a commission and not the
+order total, that a status column lumps two outcomes together, that a fresh
+week is not yet complete. A knowledge pack is a directory of the instance's own
+texts that says it: rules of the domain, notes on tables, canned queries,
+prompts, and the instance's own instructions.
+
+The pack belongs to the **instance**, not to a role: an audience that needs
+other knowledge gets another instance, with its own IdP group. It is fixed at
+boot — a new text is a new image, which is what makes "what is deployed"
+answerable from git.
+
+```toml
+[Knowledge]
+Dir       = "/opt/<service>/kb"      # empty: no pack, nothing changes
+URIScheme = "kb://shop/"             # the scheme of the pack's resources
+FoldOver  = 15                       # a bigger directory is one row of help()
+
+[Knowledge.Sources]                  # the source of schema/<source>/ → a [Databases.*] target
+orders = "orders-pg"
+events = "events-ch"
+```
+
+`URIScheme` ends with `/` and may not overlap `ringsrv://`. `docs/kb-example` is an
+example pack against the example catalogue.
+
+### Layout
+
+```
+<Dir>/
+├── instructions.md             the voice of the instance; frontmatter mode: replace | append
+├── prompts/*.md                MCP prompts: name, description, arguments; {{arg}} in the body
+├── schema/<source>/<table>.md  a note on one table
+└── anything else               topics: help and resources (md, html, csv, …)
+```
+
+**Topics** are named by their path, without `.md` for markdown:
+`playbook/metrics`, `queries/orders-by-week`, `data/regions.csv`. `help` takes
+a topic by that name, by the name with `.md`, or by its full URI — the texts
+link with URIs and the model copies a link as it is. A name ending in `/` lists
+a directory. `help()` lists the pack after the built-in sheets, and folds a
+directory of more than `FoldOver` entries into one row, described by its
+`README.md` or `index.md`. A topic that is not text (a picture, an archive) is
+refused by `help` with its URI for `resources/read`.
+
+The pack is also served as resources under its scheme and as prompts, beside the
+built-in ones.
+
+**Visibility:** in `help` and `db_introspect` every role of the instance reads
+the pack, except the files under `schema/<source>/`, which follow the database
+the source maps onto — a role without that database gets neither the note nor
+the topic there. `resources/list` and `resources/read` are not filtered by role,
+as with the built-in sheets: they are the same for everyone on the instance and
+cached as such. A listing is not access control — the database tools are — so
+a note that only some roles may read belongs on an instance of its own.
+
+### Notes on tables
+
+```yaml
+---
+table: orders                 # qualified (public.orders) or bare
+source: orders                # the directory it lies in; mapped by [Knowledge.Sources]
+purpose: Orders, one row per order.
+grain: order
+columns:
+  - name: status
+    description: The outcome; cancelled orders are not "orders".
+    enum: [new, paid, cancelled]
+  - name: amount
+    description: The order total — turnover, not revenue.
+notes:
+  - Revenue is 10% of amount.
+relations:
+  - orders.user_id → users.id
+---
+```
+
+`db_introspect` puts the note beside the schema the database reports: `doc` on
+the table (purpose, grain, notes, relations, the topic for the full text) and
+on each described column, never over the database's own `comment` and `enum` —
+the database knows the shape, the note the meaning, and a note can go stale.
+`doc.unmatched` names the columns a note describes and the table lacks. The
+table list marks described tables with `doc` and gives `purpose` where the
+database has no comment. A file under `schema/` with neither `table` nor
+`source` is an ordinary topic.
+
+### Instructions
+
+`instructions.md` with `mode: replace` takes the place of the built-in
+instructions, followed by a short core every instance keeps (the contour,
+lists, help, how to read a refusal); `mode: append` follows the built-in ones.
+`{{env}}` is filled with the contour. Without the file — or without a pack —
+the built-in instructions are sent word for word. The cap is 8 KiB: the text
+goes into every `initialize`.
+
+### What is checked at load
+
+The pack is loaded after the catalogue and checked whole; any finding is a
+refused start, and `-check-config` runs the same load:
+
+- the frontmatter of every markdown file parses (the resource loader would
+  silently take a broken one whole and lose its description);
+- every link under the pack's scheme leads to a file or a directory of the
+  pack;
+- every source maps onto a `[Databases.*]` target; a note names both `table`
+  and `source`, lies under `schema/<source>/`, names a valid table, and no
+  table is described twice;
+- every ```` ```sql ```` example passes the read-only gate of its dialect,
+  and every ```` ```sql-rejected ```` example is refused by it. The dialect
+  is the file's `driver:` (`postgres` or `clickhouse`), the database of its
+  note, or the one dialect every mapped database shares. A fragment — a
+  metric expression, a `WHERE` clause — is fenced as `sql-expr` or anything
+  else, and is not checked;
+- a prompt has a description, does not take the name of a built-in prompt,
+  and declares every `{{placeholder}}` it uses — one that is not declared
+  always renders empty. A prompt cannot hold a template action: every
+  `{{word}}` is an argument;
+- no topic takes the name of a built-in sheet (`db`, `code`, `files`) or of
+  a target; `instructions.md` has a valid `mode` and a body within the cap.
+
+Once the databases are proven, the boot also compares every note with its table
+and logs the columns the table lacks; the count is
+`app_knowledge_annotation_unmatched{target}`. The other metrics are
+`app_knowledge_topics{section}`, `app_knowledge_reads_total{section}` (through
+`help` and `resources/read` alike) and `app_knowledge_info{version}` — the
+contents of `<Dir>/.version`, which the image build writes.
+
+### What the instance offers follows its catalogue
+
+The built-in texts are about families of tools — `api_call` and its targets,
+the code, the databases, the file routes — and an instance offers only those
+about what it has, whatever the role:
+
+- the `help` description names targets only where the catalogue has profiles,
+  a family only where the instance serves it, the pack only where there is one;
+- `resources/list` carries a target sheet for each profile of the catalogue and
+  a tool sheet (`code`, `db`, `files`) for each family the instance serves;
+  `resources/read` refuses the rest;
+- a built-in prompt is offered only where the instance has every family its
+  frontmatter `requires:` (`investigate`, `errors`, `incident-triage` need
+  `api_call`, `explain` needs `code`);
+- the `db_introspect` description promises a pointer to the code only where a
+  database names a repository, and the pack's note only where the pack has one.
+
+An instance of databases alone with a pack thus offers `db_query`,
+`db_introspect`, `help`, the `db` sheet, and the pack's own resources and
+prompts — nothing else.
+
+### Delivering the pack
+
+An image of its own, built in the repository that holds the texts: the binary
+taken from the published image, the pack copied beside it. The binary is
+static, so the base can be anything with CA certificates and time zones; git
+and the AST engine are not needed when `Storage.ReposDir` is empty — the
+binary does not call git at all then.
+
+```dockerfile
+ARG RINGSRV_VERSION=v0.1.0
+FROM vmkteam/ringsrv:${RINGSRV_VERSION} AS ringsrv
+
+FROM alpine:latest
+RUN apk --no-cache add ca-certificates tzdata
+COPY --from=ringsrv /opt/ringsrv/ringsrv /opt/<service>/ringsrv
+COPY kb /opt/<service>/kb
+ARG KB_VERSION=dev
+RUN echo "${KB_VERSION}" > /opt/<service>/kb/.version
+ENTRYPOINT ["/opt/<service>/ringsrv"]
+```
+
 ## Secrets
 
 - The `.dist` files carry placeholders only. In a deployment the values live in
@@ -611,6 +788,8 @@ The section name becomes the mirror's directory: letters, digits, `._-`, no `/`.
 The validator refuses as a whole, naming the section and the field. The main
 points:
 
+- the catalogue names at least one profile or one database — an instance for
+  data questions may have no profile at all;
 - `Env` is `dev` or `prod`, and the `Description` of a profile and a database
   starts with the contour;
 - headers in `[Defaults]` and in profiles are `"Name: value"` with a non-empty

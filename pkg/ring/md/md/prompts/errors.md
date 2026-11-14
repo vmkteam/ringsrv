@@ -1,6 +1,7 @@
 ---
 name: errors
 description: Дайджест ошибок сервиса за период — Sentry, метрики, логи; на выходе короткая сводка с приоритетами.
+requires: [api_call]
 arguments:
   - name: service
     description: Имя сервиса (оно же job в Prometheus и slug в Sentry, см. repo_map)

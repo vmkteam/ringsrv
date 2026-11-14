@@ -254,9 +254,42 @@ func (s ToolsService) emptyMark(name string) string {
 	return " [сейчас 0 таблиц]"
 }
 
+// dbIntrospectDescription names what an answer can carry on this instance: the
+// pointer to the code only where a database names a repository, the note from
+// the knowledge pack only where there is a pack.
 func (s ToolsService) dbIntrospectDescription() string {
-	return fmt.Sprintf("%s · схема из базы: без tables — список таблиц; с tables (до %d имён за вызов) — колонки, ключи, enum'ы, указатель на код. target — из db_query.",
-		strings.ToUpper(s.env), maxIntrospectBatch)
+	extras := []string{"колонки", "ключи", "enum'ы"}
+	if s.dbCodeRefs() {
+		extras = append(extras, "указатель на код")
+	}
+	if s.kb != nil && s.kbHasNotes() {
+		extras = append(extras, "описание из базы знаний (doc)")
+	}
+	return fmt.Sprintf("%s · схема из базы: без tables — список таблиц; с tables (до %d имён за вызов) — %s. target — из db_query.",
+		strings.ToUpper(s.env), maxIntrospectBatch, strings.Join(extras, ", "))
+}
+
+// dbCodeRefs reports whether any database of the catalogue points at code.
+func (s ToolsService) dbCodeRefs() bool {
+	if s.targets == nil {
+		return false
+	}
+	for _, d := range s.targets.Databases {
+		if len(d.Repo) > 0 || len(d.SchemaRepos) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// kbHasNotes reports whether the pack describes a table of any database.
+func (s ToolsService) kbHasNotes() bool {
+	for _, tgt := range s.kb.Sources() {
+		if len(s.kb.Tables(tgt)) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // dbTarget resolves the role and the target for a database tool, writing the

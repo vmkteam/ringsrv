@@ -43,7 +43,7 @@ const (
 // other tools — targets of api_call, or code / db. A list, because the log shows
 // sheets fetched one at a time, seconds apart, in runs of two to four.
 type HelpArgs struct {
-	Names []string `json:"names,omitempty" jsonschema_description:"Targets from api_call, code / db / files, or topics of the instance's knowledge (dir/ lists a directory); up to 6. Empty: the list."`
+	Names []string `json:"names,omitempty" jsonschema_description:"Names from the list help() returns; one ending in / lists a directory; up to 6. Empty: the list."`
 }
 
 // HelpSheet is one row of the list. A directory of the knowledge pack too big
@@ -81,14 +81,41 @@ type HelpItem struct {
 
 var helpInputSchema = mcp.SchemaFor(HelpArgs{})
 
-// helpDescription is static on purpose: the names it would list are already
+// helpDescription is static per instance: the names it would list are already
 // in the api_call description, and every byte here is paid on every request.
+// What it names follows the instance — targets only where the catalogue has
+// profiles, a family only where the instance serves it, the knowledge pack only
+// where there is one — so that an instance of databases alone does not send the
+// model looking for api_call.
 func (s ToolsService) helpDescription() string {
-	text := strings.ToUpper(s.env) + " · шпаргалки: пути, примеры и грабли таргетов api_call или инструментов (code, db, files). names — список имён за один вызов; без names — список шпаргалок. Прочитай перед первым вызовом к таргету."
-	if s.kb != nil {
-		text += " Здесь же база знаний инстанса — правила, описания таблиц, готовые запросы; help() покажет разделы."
+	u := s.surface()
+	var sheets string
+	switch fams := strings.Join(u.families(), ", "); {
+	case u.api && fams != "":
+		sheets = "шпаргалки: пути, примеры и грабли таргетов api_call или инструментов (" + fams + ")."
+	case u.api:
+		sheets = "шпаргалки: пути, примеры и грабли таргетов api_call."
+	case fams != "":
+		sheets = "шпаргалки: примеры и грабли инструментов (" + fams + ")."
 	}
-	return text
+	parts := []string{strings.ToUpper(s.env) + " ·"}
+	if sheets != "" {
+		parts = append(parts, sheets)
+	}
+	if s.kb != nil {
+		kbText := "база знаний инстанса — правила, описания таблиц, готовые запросы."
+		if sheets != "" {
+			kbText = "Здесь же " + kbText
+		}
+		parts = append(parts, kbText)
+	}
+	parts = append(parts, "names — список имён за один вызов; без names — список.")
+	if u.api {
+		parts = append(parts, "Прочитай перед первым вызовом к таргету.")
+	} else {
+		parts = append(parts, "Прочитай перед первым вызовом.")
+	}
+	return strings.Join(parts, " ")
 }
 
 // sheetURI maps a name the caller knows to the resource behind it. A write
@@ -97,9 +124,9 @@ func (s ToolsService) helpDescription() string {
 func sheetURI(name string) string {
 	switch name {
 	case sheetCode, sheetDB, sheetFiles:
-		return "tools/" + name + ".md"
+		return sheetDirTools + "/" + name + ".md"
 	default:
-		return "targets/" + strings.TrimSuffix(name, "-rw") + ".md"
+		return sheetDirTargets + "/" + strings.TrimSuffix(name, "-rw") + ".md"
 	}
 }
 

@@ -29,24 +29,47 @@ type catalogue struct {
 type cataloguePart struct {
 	lib    *doc.Library
 	scheme string
+	// keepPrompt and keepResource say which of the tree's texts this instance
+	// serves; nil keeps all. The built-in tree is filtered by what the instance
+	// has, the pack is served whole.
+	keepPrompt   func(name string) bool
+	keepResource func(uri string) bool
+}
+
+func (p cataloguePart) prompt(name string) bool {
+	return p.keepPrompt == nil || p.keepPrompt(name)
+}
+
+func (p cataloguePart) resource(uri string) bool {
+	return p.keepResource == nil || p.keepResource(p.lib.NormalizeURI(uri))
+}
+
+// builtinFilter is what of the built-in tree an instance serves.
+type builtinFilter struct {
+	prompt   func(name string) bool
+	resource func(uri string) bool
 }
 
 // newCatalogue merges the built-in tree and the pack. A prompt name in both is
 // refused when the pack loads (kb.Deps.ReservedPrompts); here the built-in one
 // would win.
-func newCatalogue(builtin *doc.Library, builtinScheme string, pack *kb.Pack) *catalogue {
+func newCatalogue(builtin *doc.Library, builtinScheme string, pack *kb.Pack, keep builtinFilter) *catalogue {
 	c := &catalogue{}
 	if builtin != nil {
-		c.parts = append(c.parts, cataloguePart{lib: builtin, scheme: builtinScheme})
+		c.parts = append(c.parts, cataloguePart{lib: builtin, scheme: builtinScheme, keepPrompt: keep.prompt, keepResource: keep.resource})
 	}
 	if pack != nil {
 		c.parts = append(c.parts, cataloguePart{lib: pack.Library(), scheme: pack.URIScheme()})
 	}
 	seen := map[string]bool{}
 	for _, p := range c.parts {
-		c.resources = append(c.resources, p.lib.Resources()...)
+		for _, r := range p.lib.Resources() {
+			if p.resource(r.URI) {
+				c.resources = append(c.resources, r)
+			}
+		}
 		for _, pr := range p.lib.Prompts() {
-			if !seen[pr.Name] {
+			if !seen[pr.Name] && p.prompt(pr.Name) {
 				seen[pr.Name] = true
 				c.prompts = append(c.prompts, pr)
 			}
@@ -62,7 +85,7 @@ func (c *catalogue) Resources() []mcp.ResourceEntry { return c.resources }
 // Read routes by scheme; a bare path is looked up in each tree in turn.
 func (c *catalogue) Read(uri string) ([]byte, string, error) {
 	p, ok := c.partOf(uri)
-	if !ok {
+	if !ok || !p.resource(uri) {
 		return nil, "", fmt.Errorf("unknown resource %q: %w", uri, mcp.ErrInvalidParams)
 	}
 	return p.lib.Read(uri)
@@ -82,7 +105,7 @@ func (c *catalogue) Prompts() []mcp.PromptEntry { return c.prompts }
 // Render finds the prompt in whichever tree has it.
 func (c *catalogue) Render(name string, args map[string]string) (description, text string, err error) {
 	for _, p := range c.parts {
-		if _, err := p.lib.Prompt(name); err == nil {
+		if _, err := p.lib.Prompt(name); err == nil && p.prompt(name) {
 			return p.lib.Render(name, args)
 		}
 	}
@@ -96,8 +119,10 @@ func (c *catalogue) partOf(uri string) (cataloguePart, bool) {
 			return p, true
 		}
 	}
+	// A bare path goes to the first tree that serves it: one the instance
+	// hides is not in the way of the pack.
 	for _, p := range c.parts {
-		if _, ok := p.lib.Entry(uri); ok {
+		if _, ok := p.lib.Entry(uri); ok && p.resource(uri) {
 			return p, true
 		}
 	}
