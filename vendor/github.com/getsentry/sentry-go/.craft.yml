@@ -16,6 +16,9 @@ targets:
     tagPrefix: otel/otlp/v
     tagOnly: true
   - name: github
+    tagPrefix: cron/v
+    tagOnly: true
+  - name: github
     tagPrefix: echo/v
     tagOnly: true
   - name: github
@@ -25,7 +28,13 @@ targets:
     tagPrefix: fiber/v
     tagOnly: true
   - name: github
+    tagPrefix: fiberv3/v
+    tagOnly: true
+  - name: github
     tagPrefix: gin/v
+    tagOnly: true
+  - name: github
+    tagPrefix: grpc/v
     tagOnly: true
   - name: github
     tagPrefix: iris/v
@@ -38,6 +47,9 @@ targets:
     tagOnly: true
   - name: github
     tagPrefix: slog/v
+    tagOnly: true
+  - name: github
+    tagPrefix: sql/v
     tagOnly: true
   - name: github
     tagPrefix: zerolog/v

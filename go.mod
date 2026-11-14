@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/ClickHouse/clickhouse-go/v2 v2.51.0
-	github.com/getsentry/sentry-go v0.45.1
+	github.com/getsentry/sentry-go v0.50.0
 	github.com/go-pg/pg/v10 v10.15.1
 	github.com/itchyny/gojq v0.12.20
 	github.com/labstack/echo/v4 v4.16.4
@@ -18,7 +18,7 @@ require (
 	github.com/vmkteam/cron v0.1.5
 	github.com/vmkteam/embedlog v0.1.3
 	github.com/vmkteam/mcpkit v0.1.5
-	github.com/vmkteam/zenrpc-middleware v1.3.2
+	github.com/vmkteam/zenrpc-middleware v1.3.3
 	github.com/vmkteam/zenrpc/v2 v2.3.3
 	golang.org/x/crypto v0.59.0
 	golang.org/x/image v0.48.0
@@ -36,7 +36,7 @@ require (
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/coreos/go-oidc/v3 v3.17.0 // indirect
-	github.com/getsentry/sentry-go/echo v0.41.0 // indirect
+	github.com/getsentry/sentry-go/echo v0.44.1 // indirect
 	github.com/go-faster/city v1.0.1 // indirect
 	github.com/go-faster/errors v0.8.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect

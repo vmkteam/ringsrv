@@ -133,8 +133,8 @@ type ClientOptions struct {
 	// The DSN to use. If the DSN is not set, the client is effectively
 	// disabled.
 	Dsn string
-	// In debug mode, the debug information is printed to stdout to help you
-	// understand what sentry is doing.
+	// In debug mode, diagnostic information is written to DebugWriter, which
+	// defaults to stderr.
 	Debug bool
 	// Configures whether SDK should generate and attach stacktraces to pure
 	// capture message calls.
@@ -172,9 +172,18 @@ type ClientOptions struct {
 	// List of regexp strings that will be used to match against a transaction's
 	// name.  If a match is found, then the transaction  will be dropped.
 	IgnoreTransactions []string
+	// Deprecated: Use DataCollection for granular control over what data the
+	// SDK collects. When DataCollection is configured, SendDefaultPII is
+	// ignored.
+	//
 	// If this flag is enabled, certain personally identifiable information (PII) is added by active integrations.
 	// By default, no such data is sent.
 	SendDefaultPII bool
+	// DataCollection configures what data the SDK collects automatically. All fields are optional. By default
+	// the SDK collects rich context for debugging while scrubbing sensitive values.
+	//
+	// See https://docs.sentry.io/platforms/go/configuration/options/#DataCollection
+	DataCollection *DataCollection
 	// BeforeSend is called before error events are sent to Sentry.
 	// You can use it to mutate the event or return nil to discard it.
 	BeforeSend func(event *Event, hint *EventHint) *Event
@@ -261,10 +270,6 @@ type ClientOptions struct {
 	MaxErrorDepth int
 	// Default event tags. These are overridden by tags set on a scope.
 	Tags map[string]string
-	// EnableLogs controls when logs should be emitted.
-	EnableLogs bool
-	// DisableMetrics controls when metrics should be emitted.
-	DisableMetrics bool
 	// DisableClientReports controls when client reports should be emitted.
 	DisableClientReports bool
 	// TraceIgnoreStatusCodes is a list of HTTP status codes that should not be traced.
@@ -293,8 +298,9 @@ type ClientOptions struct {
 // instances. It must be created with NewClient.
 type Client struct {
 	mu                    sync.RWMutex
+	disabled              bool
 	options               ClientOptions
-	dsn                   *Dsn
+	dsn                   *protocol.Dsn
 	eventProcessors       []EventProcessor
 	integrations          []Integration
 	externalTraceResolver externalContextTraceResolver
@@ -372,6 +378,9 @@ func NewClient(options ClientOptions) (*Client, error) {
 		options.TraceIgnoreStatusCodes = [][]int{{404}}
 	}
 
+	resolvedDataCollection := snapshotDataCollection(options.DataCollection, options.SendDefaultPII)
+	options.DataCollection = cloneDataCollection(&resolvedDataCollection)
+
 	// SENTRYGODEBUG is a comma-separated list of key=value pairs (similar
 	// to GODEBUG). It is not a supported feature: recognized debug options
 	// may change any time.
@@ -395,10 +404,10 @@ func NewClient(options ClientOptions) (*Client, error) {
 		}
 	}
 
-	var dsn *Dsn
+	var dsn *protocol.Dsn
 	if options.Dsn != "" {
 		var err error
-		dsn, err = NewDsn(options.Dsn)
+		dsn, err = protocol.NewDsn(options.Dsn)
 		if err != nil {
 			return nil, err
 		}
@@ -419,27 +428,66 @@ func NewClient(options ClientOptions) (*Client, error) {
 		client.reportProvider = a
 	}
 
-	client.setupTransport()
+	// We currently disallow using custom Transport with the new Telemetry Processor, due to the difference in transport signatures.
+	// The option should be enabled when the new Transport interface signature changes.
+	if !options.DisableTelemetryBuffer && client.options.Transport == nil {
+		client.setupTelemetryProcessor()
+	} else {
+		if client.options.Transport != nil {
+			debuglog.Println("Cannot enable Telemetry Processor with custom Transport: fallback to old transport")
+		}
+		client.setupTransport()
 
-	// noop Telemetry Buffers and Processor fow now
-	// if !options.DisableTelemetryBuffer {
-	// 	client.setupTelemetryProcessor()
-	// } else
-	if options.EnableLogs {
 		client.batchLogger = newLogBatchProcessor(&client)
 		client.batchLogger.Start()
-	}
-
-	if !options.DisableMetrics {
 		client.batchMeter = newMetricBatchProcessor(&client)
 		client.batchMeter.Start()
 	}
+	client.setupIntegrations()
 	if options.OrgID != 0 && client.dsn != nil {
 		client.dsn.SetOrgID(options.OrgID)
 	}
-	client.setupIntegrations()
 
 	return &client, nil
+}
+
+var noopClient = &Client{
+	disabled: true,
+	options: ClientOptions{
+		DisableTelemetryBuffer: true,
+		MaxErrorDepth:          maxErrorDepth,
+		MaxSpans:               defaultMaxSpans,
+		TraceIgnoreStatusCodes: [][]int{{404}},
+	},
+	sdkIdentifier:  sdkIdentifier,
+	sdkVersion:     SDKVersion,
+	Transport:      new(noopTransport),
+	reportRecorder: report.NoopRecorder(),
+	reportProvider: report.NoopProvider(),
+}
+
+// NewNoopClient returns the shared client that safely discards telemetry.
+// Its mutating methods have no effect.
+func NewNoopClient() *Client {
+	return noopClient
+}
+
+// IsEnabled reports whether the client processes captured telemetry.
+//
+// It returns false for a nil receiver and for clients returned by
+// NewNoopClient. A client can be enabled while using a transport that discards
+// telemetry, such as a client configured with an empty DSN.
+func (client *Client) IsEnabled() bool {
+	return client != nil && !client.disabled
+}
+
+// normalizeClient returns client, or the shared no-op client when client is
+// nil.
+func normalizeClient(client *Client) *Client {
+	if client == nil {
+		return noopClient
+	}
+	return client
 }
 
 func (client *Client) setupTransport() {
@@ -474,31 +522,19 @@ func (client *Client) setupTransport() {
 	client.Transport = transport
 }
 
-func (client *Client) setupTelemetryProcessor() { // nolint: unused
-	if client.options.DisableTelemetryBuffer {
-		return
+func (client *Client) sdkInfo() *protocol.SdkInfo {
+	return &protocol.SdkInfo{
+		Name:         client.GetSDKIdentifier(),
+		Version:      SDKVersion,
+		Integrations: client.listIntegrations(),
+		Packages: []SdkPackage{{
+			Name:    "sentry-go",
+			Version: SDKVersion,
+		}},
 	}
+}
 
-	if client.dsn == nil {
-		debuglog.Println("Telemetry buffer disabled: no DSN configured")
-		return
-	}
-
-	// We currently disallow using custom Transport with the new Telemetry Processor, due to the difference in transport signatures.
-	// The option should be enabled when the new Transport interface signature changes.
-	if client.options.Transport != nil {
-		debuglog.Println("Cannot enable Telemetry Processor/Buffers with custom Transport: fallback to old transport")
-		if client.options.EnableLogs {
-			client.batchLogger = newLogBatchProcessor(client)
-			client.batchLogger.Start()
-		}
-		if !client.options.DisableMetrics {
-			client.batchMeter = newMetricBatchProcessor(client)
-			client.batchMeter.Start()
-		}
-		return
-	}
-
+func (client *Client) setupTelemetryProcessor() {
 	transport := httpInternal.NewAsyncTransport(httpInternal.TransportOptions{
 		Dsn:           client.options.Dsn,
 		HTTPClient:    client.options.HTTPClient,
@@ -508,6 +544,7 @@ func (client *Client) setupTelemetryProcessor() { // nolint: unused
 		CaCerts:       client.options.CaCerts,
 		Recorder:      client.reportRecorder,
 		Provider:      client.reportProvider,
+		SdkInfo:       client.sdkInfo,
 	})
 	client.Transport = &internalAsyncTransportAdapter{transport: transport}
 
@@ -519,17 +556,11 @@ func (client *Client) setupTelemetryProcessor() { // nolint: unused
 		ratelimit.CategoryTraceMetric: telemetry.NewRingBuffer[protocol.TelemetryItem](ratelimit.CategoryTraceMetric, 10*100, telemetry.OverflowPolicyDropOldest, 100, 5*time.Second, client.reportRecorder),
 	}
 
-	sdkInfo := &protocol.SdkInfo{
-		Name:    client.sdkIdentifier,
-		Version: client.sdkVersion,
-	}
-
-	client.telemetryProcessor = telemetry.NewProcessor(buffers, transport, &client.dsn.Dsn, sdkInfo, client.reportRecorder)
+	client.telemetryProcessor = telemetry.NewProcessor(buffers, transport, client.dsn, client.sdkInfo, client.reportRecorder)
 }
 
 func (client *Client) setupIntegrations() {
 	integrations := []Integration{
-		new(contextifyFramesIntegration),
 		new(environmentIntegration),
 		new(modulesIntegration),
 		new(ignoreErrorsIntegration),
@@ -564,6 +595,9 @@ func (client *Client) setupIntegrations() {
 // client is shared among multiple hubs, one per goroutine, such that adding an
 // event processor to the client affects all hubs that share the client.
 func (client *Client) AddEventProcessor(processor EventProcessor) {
+	if !client.IsEnabled() {
+		return
+	}
 	client.eventProcessors = append(client.eventProcessors, processor)
 }
 
@@ -572,6 +606,9 @@ func (client *Client) AddEventProcessor(processor EventProcessor) {
 //
 // This is intended for integrations such as OpenTelemetry.
 func (client *Client) SetExternalContextTraceResolver(resolver func(ctx context.Context) (TraceID, SpanID, bool)) {
+	if !client.IsEnabled() {
+		return
+	}
 	client.mu.Lock()
 	defer client.mu.Unlock()
 
@@ -597,27 +634,48 @@ func (client *Client) externalTraceContextFromContext(ctx context.Context) (Trac
 // Options return ClientOptions for the current Client.
 func (client *Client) Options() ClientOptions {
 	// Note: internally, consider using `client.options` instead of `client.Options()` to avoid copying the object each time.
-	return client.options
+	opts := client.options
+	opts.DataCollection = cloneDataCollection(client.options.DataCollection)
+	return opts
+}
+
+// GetDataCollection returns a copy of the resolved data collection
+// configuration used by the client.
+func (client *Client) GetDataCollection() DataCollection {
+	if !client.IsEnabled() || client.options.DataCollection == nil {
+		return DataCollection{}
+	}
+	return *cloneDataCollection(client.options.DataCollection)
 }
 
 // CaptureMessage captures an arbitrary message.
 func (client *Client) CaptureMessage(message string, hint *EventHint, scope EventModifier) *EventID {
+	if !client.IsEnabled() {
+		return nil
+	}
 	event := client.EventFromMessage(message, LevelInfo)
 	return client.CaptureEvent(event, hint, scope)
 }
 
 // CaptureException captures an error.
 func (client *Client) CaptureException(exception error, hint *EventHint, scope EventModifier) *EventID {
+	if !client.IsEnabled() {
+		return nil
+	}
 	event := client.EventFromException(exception, LevelError)
 	return client.CaptureEvent(event, hint, scope)
 }
 
 // CaptureCheckIn captures a check in.
 func (client *Client) CaptureCheckIn(checkIn *CheckIn, monitorConfig *MonitorConfig, scope EventModifier) *EventID {
+	if !client.IsEnabled() {
+		return nil
+	}
 	event := client.EventFromCheckIn(checkIn, monitorConfig)
 	if event != nil && event.CheckIn != nil {
-		client.CaptureEvent(event, nil, scope)
-		return &event.CheckIn.ID
+		if client.CaptureEvent(event, nil, scope) != nil {
+			return &event.CheckIn.ID
+		}
 	}
 	return nil
 }
@@ -628,6 +686,9 @@ func (client *Client) CaptureCheckIn(checkIn *CheckIn, monitorConfig *MonitorCon
 // the utility methods like CaptureException. The return value is the
 // event ID. In case Sentry is disabled or event was dropped, the return value will be nil.
 func (client *Client) CaptureEvent(event *Event, hint *EventHint, scope EventModifier) *EventID {
+	if !client.IsEnabled() {
+		return nil
+	}
 	return client.processEvent(event, hint, scope)
 }
 
@@ -698,7 +759,7 @@ func (client *Client) captureMetric(metric *Metric, _ *Scope) bool {
 
 // Recover captures a panic.
 // Returns EventID if successfully, or nil if there's no error to recover from.
-func (client *Client) Recover(err interface{}, hint *EventHint, scope EventModifier) *EventID {
+func (client *Client) Recover(err any, hint *EventHint, scope EventModifier) *EventID {
 	if err == nil {
 		err = recover()
 	}
@@ -715,7 +776,7 @@ func (client *Client) Recover(err interface{}, hint *EventHint, scope EventModif
 // Returns EventID if successfully, or nil if there's no error to recover from.
 func (client *Client) RecoverWithContext(
 	ctx context.Context,
-	err interface{},
+	err any,
 	hint *EventHint,
 	scope EventModifier,
 ) *EventID {
@@ -723,6 +784,9 @@ func (client *Client) RecoverWithContext(
 		err = recover()
 	}
 	if err == nil {
+		return nil
+	}
+	if !client.IsEnabled() {
 		return nil
 	}
 
@@ -749,7 +813,8 @@ func (client *Client) RecoverWithContext(
 
 // Flush waits until the underlying Transport sends any buffered events to the
 // Sentry server, blocking for at most the given timeout. It returns false if
-// the timeout was reached. In that case, some events may not have been sent.
+// the client is disabled or the timeout was reached. In the latter case, some
+// events may not have been sent.
 //
 // Flush should be called before terminating the program to avoid
 // unintentionally dropping events.
@@ -759,6 +824,9 @@ func (client *Client) RecoverWithContext(
 // the network synchronously, configure it to use the HTTPSyncTransport in the
 // call to Init.
 func (client *Client) Flush(timeout time.Duration) bool {
+	if !client.IsEnabled() {
+		return false
+	}
 	if client.batchLogger != nil || client.batchMeter != nil || client.telemetryProcessor != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
@@ -768,9 +836,10 @@ func (client *Client) Flush(timeout time.Duration) bool {
 }
 
 // FlushWithContext waits until the underlying Transport sends any buffered events
-// to the Sentry server, blocking for at most the duration specified by the context.
-// It returns false if the context is canceled before the events are sent. In such a case,
-// some events may not be delivered.
+// to the Sentry server, blocking for at most the duration specified by the
+// context. It returns false if the client is disabled or the context is
+// canceled before the events are sent. In the latter case, some events may not
+// be delivered.
 //
 // FlushWithContext should be called before terminating the program to ensure no
 // events are unintentionally dropped.
@@ -780,6 +849,9 @@ func (client *Client) Flush(timeout time.Duration) bool {
 // configure the SDK to use HTTPSyncTransport during initialization with Init.
 
 func (client *Client) FlushWithContext(ctx context.Context) bool {
+	if !client.IsEnabled() {
+		return false
+	}
 	if client.batchLogger != nil {
 		client.batchLogger.Flush(ctx.Done())
 	}
@@ -797,6 +869,9 @@ func (client *Client) FlushWithContext(ctx context.Context) bool {
 // Close should be called after Flush and before terminating the program
 // otherwise some events may be lost.
 func (client *Client) Close() {
+	if !client.IsEnabled() {
+		return
+	}
 	if client.telemetryProcessor != nil {
 		client.telemetryProcessor.Close(5 * time.Second)
 	}
@@ -873,6 +948,9 @@ func (client *Client) EventFromCheckIn(checkIn *CheckIn, monitorConfig *MonitorC
 }
 
 func (client *Client) SetSDKIdentifier(identifier string) {
+	if !client.IsEnabled() {
+		return
+	}
 	client.mu.Lock()
 	defer client.mu.Unlock()
 
