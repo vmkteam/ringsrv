@@ -21,6 +21,12 @@ import (
 // something hangs on the network, not for the honest slow path.
 const DefaultTimeout = 5 * time.Minute
 
+// DefaultGrepTimeout caps one search. A search takes about a second on the
+// measured repository; a regexp that makes git backtrack over a whole monorepo
+// took 189s in production, past the two minutes after which the server cuts
+// the answer anyway, so the client got nothing for it.
+const DefaultGrepTimeout = 30 * time.Second
+
 // DefaultCloneTimeout caps the first clone, which is the honest slow path: the
 // whole history comes as one pack, and a 1.3 GB repository would need 4.4 MB/s
 // sustained to arrive within DefaultTimeout.
@@ -63,6 +69,8 @@ type Options struct {
 	Timeout time.Duration
 	// CloneTimeout caps the first clone; empty means DefaultCloneTimeout.
 	CloneTimeout time.Duration
+	// GrepTimeout caps one search; empty means DefaultGrepTimeout.
+	GrepTimeout time.Duration
 	// OnRemove, when set, hears of everything the store removes on its own
 	// apart from worktree eviction: a broken mirror, an abandoned clone or
 	// pack. The app logs it — a disk that frees gigabytes by itself has to say

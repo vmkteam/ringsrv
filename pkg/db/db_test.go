@@ -385,5 +385,24 @@ func TestClassify(t *testing.T) {
 	require.NoError(t, classify(nil))
 	plain := errors.New("x")
 	assert.Equal(t, plain, classify(plain))
-	assert.ErrorIs(t, classify(fmt.Errorf("wrapped: %w", context.DeadlineExceeded)), dbq.ErrTimeout)
+	require.ErrorIs(t, classify(fmt.Errorf("wrapped: %w", context.DeadlineExceeded)), dbq.ErrTimeout)
+
+	denied := classify(fakePGError{code: "42501", msg: "permission denied for table order_history"})
+	require.ErrorIs(t, denied, dbq.ErrPermission)
+	assert.Contains(t, denied.Error(), "permission denied for table order_history", "the server's words travel on")
 }
+
+// fakePGError is a server error as go-pg hands it over, without a server.
+type fakePGError struct{ code, msg string }
+
+func (e fakePGError) Error() string { return "ERROR #" + e.code + " " + e.msg }
+func (e fakePGError) Field(f byte) string {
+	switch f {
+	case 'C':
+		return e.code
+	case 'M':
+		return e.msg
+	}
+	return ""
+}
+func (e fakePGError) IntegrityViolation() bool { return false }

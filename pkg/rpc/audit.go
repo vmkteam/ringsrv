@@ -75,6 +75,9 @@ type auditRecord struct {
 	// Cache says the answer was served from an identical call in the same batch.
 	Cache          string
 	UpstreamStatus int
+	// UpstreamError is an error answered with a success status (Slack's
+	// ok:false, a JSON-RPC error): the status alone records it as a success.
+	UpstreamError string
 	// File is what the file route served; Image says it went out as a picture,
 	// which no redaction rule can have read.
 	File  *files.Meta
@@ -105,6 +108,7 @@ func (r auditRecord) core() audit.Record {
 		"write", r.Write,
 		"cache", r.Cache,
 		"upstream_status", r.UpstreamStatus,
+		"upstream_error", r.maskForLog(r.UpstreamError),
 	}
 	// Only on the records of the file route: every other record would carry
 	// five empty keys.

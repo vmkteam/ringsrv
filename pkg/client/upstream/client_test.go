@@ -121,6 +121,31 @@ func TestDo_UpstreamErrorsAndTimeout(t *testing.T) {
 		require.ErrorIs(t, err, ErrTimeout)
 	})
 
+	t.Run("a target's own timeout wins both ways", func(t *testing.T) {
+		t.Parallel()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			time.Sleep(150 * time.Millisecond)
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		defer srv.Close()
+		c := New(Options{Timeout: 50 * time.Millisecond})
+
+		patient := targetFor(srv.URL)
+		patient.Timeout = 2 * time.Second
+		resp, err := c.Do(context.Background(), patient, Request{Method: http.MethodGet, Path: "/api/v1/slow"})
+		require.NoError(t, err, "longer than the client's default")
+		assert.Equal(t, http.StatusOK, resp.Status)
+
+		hasty := targetFor(srv.URL)
+		hasty.Timeout = 20 * time.Millisecond
+		_, err = New(Options{Timeout: 2 * time.Second}).Do(context.Background(), hasty, Request{Method: http.MethodGet, Path: "/api/v1/slow"})
+		require.ErrorIs(t, err, ErrTimeout)
+		assert.Contains(t, err.Error(), "after 20ms", "the error names the deadline that fired")
+
+		assert.Equal(t, 2*time.Second, c.TimeoutFor(patient))
+		assert.Equal(t, 50*time.Millisecond, c.TimeoutFor(targetFor(srv.URL)))
+	})
+
 	t.Run("unreachable host is a plain error", func(t *testing.T) {
 		t.Parallel()
 		srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))

@@ -31,11 +31,13 @@ func TestIsInternal(t *testing.T) {
 }
 
 // An unknown method answers -32601 "Method not found", not "Internal error".
+// The method is made up on purpose, under a namespace that exists: this used to
+// be resources/templates/list, until mcpkit learned to answer it.
 func TestMCP_UnknownMethodIsNotInternal(t *testing.T) {
 	t.Parallel()
 	srv := newMCPTestServer(t)
 
-	body := `{"jsonrpc":"2.0","id":1,"method":"resources/templates/list"}`
+	body := `{"jsonrpc":"2.0","id":1,"method":"resources/nonexistent"}`
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
 	rr := httptest.NewRecorder()
 	srv.ServeHTTP(rr, req)

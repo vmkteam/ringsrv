@@ -66,6 +66,14 @@ type Answer struct {
 	// DefaultJQ is set when the profile's filter ran because the request brought
 	// none: a trimmed answer has to be distinguishable from the whole thing.
 	DefaultJQ bool
+	// RawShape is set when the call's own jq produced nothing from a JSON body:
+	// the paths that body has, because a filter written for the shape the
+	// default leaves selects nothing on the raw one and reads as "there is none".
+	RawShape []string
+	// UpstreamError is an error the upstream answered with a success status —
+	// Slack's ok:false, a JSON-RPC error — for the audit and the metrics. The
+	// body still goes to the model: the profile's filter lifts the error there.
+	UpstreamError string
 	// File is set by the file route: what was served, for the audit.
 	File *files.Meta
 	// Image is a picture the file route served, for a content block of its
@@ -205,15 +213,31 @@ func (p *Manager) shape(ctx context.Context, prof *target.Profile, req Request, 
 			Truncated: truncated || resp.Truncated, BytesTotal: total, Redacted: red,
 		}, nil
 	case errors.Is(err, ring.ErrJQCompile), errors.Is(err, ring.ErrJQRun):
-		return nil, &Error{Kind: FailJQ, Err: err, Status: resp.Status, Keys: ring.TopLevelKeys(resp.Body)}
+		return nil, &Error{Kind: FailJQ, Err: err, Status: resp.Status, Keys: redactKeys(ring.TopLevelKeys(resp.Body), prof)}
 	case err != nil:
 		return nil, &Error{Kind: FailUpstream, Err: err, Status: resp.Status}
 	}
-	return &Answer{
+	answer := &Answer{
 		Status: resp.Status, Data: shaped.Data, Text: shaped.Text, AsText: shaped.AsText,
 		Truncated: shaped.Truncated || resp.Truncated, BytesTotal: shaped.BytesTotal,
 		Redacted: shaped.Redacted, DefaultJQ: byDefault,
-	}, nil
+	}
+	if req.JQ != "" && req.JQ != ring.JQIdentity && !shaped.AsText && ring.IsEmptyResult(shaped.Data) {
+		answer.RawShape = redactKeys(ring.RawShape(resp.Body), prof)
+	}
+	answer.UpstreamError = ring.AnsweredError(resp.Body)
+	return answer, nil
+}
+
+// redactKeys runs key names through the profile's redaction like any other
+// text of the answer. An object keyed by an e-mail or a phone puts the value
+// into the key, where the filter that shaped the answer never looked.
+func redactKeys(keys []string, prof *target.Profile) []string {
+	opts := redact.Options{Mode: prof.Redact, Rules: prof.RedactRules}
+	for i, k := range keys {
+		keys[i], _ = redact.Text(k, opts)
+	}
+	return keys
 }
 
 // upstreamErrBodyBytes caps how much of a failing body travels in the error:

@@ -175,6 +175,143 @@ func TopLevelKeys(body []byte) []string {
 	return keys
 }
 
+// maxAnsweredError caps the error text AnsweredError hands on: a code or a
+// sentence, not a stack trace.
+const maxAnsweredError = 200
+
+// AnsweredError finds an error an upstream answered with a success status, in
+// the two conventions the catalogue's APIs use: Slack's {"ok": false, "error":
+// "missing_scope"} and a JSON-RPC envelope with "error" set, alone or in a
+// batch. The status said 200, so without this the audit and the metrics count
+// a refusal as a success. Empty when the body is neither.
+func AnsweredError(body []byte) string {
+	// Every successful answer passes here, megabytes of it at times: a body
+	// that never says "error" is not decoded a second time.
+	if !bytes.Contains(body, []byte(`"error"`)) {
+		return ""
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err == nil {
+		return clipError(objectError(obj))
+	}
+	var batch []map[string]json.RawMessage
+	if err := json.Unmarshal(body, &batch); err == nil {
+		for _, one := range batch {
+			if e := objectError(one); e != "" {
+				return clipError(e)
+			}
+		}
+	}
+	return ""
+}
+
+func objectError(obj map[string]json.RawMessage) string {
+	raw, has := obj["error"]
+	if !has || string(raw) == "null" {
+		return ""
+	}
+	if ok, hasOK := obj["ok"]; hasOK && string(ok) == "false" {
+		var code string
+		if json.Unmarshal(raw, &code) == nil {
+			return code
+		}
+		return string(raw)
+	}
+	if _, rpc := obj["jsonrpc"]; rpc {
+		var e struct {
+			Code    *int   `json:"code"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(raw, &e) == nil && (e.Code != nil || e.Message != "") {
+			if e.Code == nil {
+				return e.Message
+			}
+			return strings.TrimSuffix(fmt.Sprintf("%d %s", *e.Code, e.Message), " ")
+		}
+		return string(raw)
+	}
+	return ""
+}
+
+func clipError(s string) string {
+	if len(s) <= maxAnsweredError {
+		return s
+	}
+	return strings.ToValidUTF8(s[:maxAnsweredError], "")
+}
+
+// Bounds of RawShape: three levels reach a list's fields under one wrapper
+// (`results.messages[].content`), and forty paths are enough to spot the right
+// one without turning an empty answer into a large one.
+const (
+	rawShapeDepth = 3
+	rawShapePaths = 40
+)
+
+// RawShape lists the paths of a JSON body as a jq filter would reach them —
+// `results`, `results.messages`, `results.messages[].content` — keys sorted
+// level by level, an array read through its first element. It travels with an
+// own jq that produced nothing: a filter written for the shape the profile's
+// default leaves, run on the raw body, selects nothing rather than failing, and
+// the model takes the empty answer for "there is none". Nil for a body that is
+// not a JSON object or array.
+func RawShape(body []byte) []string {
+	var v any
+	if err := json.Unmarshal(body, &v); err != nil {
+		return nil
+	}
+	var out []string
+	walkShape(v, "", rawShapeDepth, &out)
+	return out
+}
+
+func walkShape(v any, prefix string, depth int, out *[]string) {
+	if depth == 0 {
+		return
+	}
+	switch t := v.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if len(*out) >= rawShapePaths {
+				return
+			}
+			path := k
+			if prefix != "" {
+				path = prefix + "." + k
+			}
+			*out = append(*out, path)
+			walkShape(t[k], path, depth-1, out)
+		}
+	case []any:
+		// The brackets are not a level of their own: `messages[].text` is as deep
+		// as `messages.text` would be.
+		if len(t) > 0 {
+			walkShape(t[0], prefix+"[]", depth, out)
+		}
+	}
+}
+
+// IsEmptyResult reports whether a filtered value carries nothing: no output at
+// all, or an empty list, object or string.
+func IsEmptyResult(v any) bool {
+	switch t := v.(type) {
+	case nil:
+		return true
+	case []any:
+		return len(t) == 0
+	case map[string]any:
+		return len(t) == 0
+	case string:
+		return t == ""
+	}
+	return false
+}
+
 // What follows bounds the memory a jq expression can ask for: gojq has no memory
 // limit and the timeout only caps time, so `"a" * 2000000000` allocates two
 // gigabytes and `[range(100000000)]` takes a 512 MB task down within two

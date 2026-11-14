@@ -87,3 +87,26 @@ func TestEnsure_FirstCloneHasItsOwnTimeout(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, entries, "the clone directory goes with the clone")
 }
+
+// A search has a cap of its own, far under the five minutes of any other
+// command: a backtracking regexp over a monorepo outlasts the answer it is for.
+func TestGrep_HasItsOwnTimeout(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	fake := filepath.Join(root, "git")
+	require.NoError(t, os.WriteFile(fake, []byte("#!/bin/sh\nsleep 60\n"), 0o700))
+	s := New(Options{
+		ReposDir:     filepath.Join(root, "repos"),
+		WorktreesDir: filepath.Join(root, "worktrees"),
+		Git:          fake,
+		Timeout:      time.Minute,
+		GrepTimeout:  300 * time.Millisecond,
+	})
+	require.NoError(t, os.MkdirAll(s.ClonePath("apisrv"), 0o700))
+
+	start := time.Now()
+	_, _, err := s.Grep(t.Context(), "apisrv", "abc1234", GrepOptions{Pattern: "(a+)+$", Regexp: true})
+	require.ErrorIs(t, err, ErrTimeout)
+	require.ErrorContains(t, err, "git grep timed out after 300ms")
+	assert.Less(t, time.Since(start), 20*time.Second)
+}

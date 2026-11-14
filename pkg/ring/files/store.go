@@ -86,7 +86,7 @@ func (f *Fetcher) Store(ctx context.Context, prof *target.Profile, route, rawPat
 			return nil, slotErr
 		}
 		defer release()
-		if timeout := f.client.Timeout(); timeout > 0 {
+		if timeout := f.client.TimeoutFor(prof.Upstream()); timeout > 0 {
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithTimeout(ctx, timeout)
 			defer cancel()

@@ -38,6 +38,12 @@ type Profile struct {
 	AllowPaths   []string
 	DefaultJQ    string
 	MaxBytes     int
+	// Timeout bounds one call to this upstream, the answer read included; 0
+	// falls back to Limits.UpstreamTimeout. For an API whose honest answer is
+	// slow — a log query over a day — not for one that hangs. At most
+	// MaxProfileTimeout: the client's answer is cut at the server's write
+	// timeout whatever the upstream does.
+	Timeout time.Duration
 
 	// TimeParams lists the query parameters where now-1h style values are
 	// expanded, TimeFormat says into what.
@@ -179,6 +185,7 @@ func (p *Profile) Upstream() upstream.Target {
 		BaseURL:    p.BaseURL,
 		PathPrefix: p.PathPrefix,
 		Headers:    p.headers,
+		Timeout:    p.Timeout,
 	}
 }
 

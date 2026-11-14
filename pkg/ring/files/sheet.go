@@ -596,8 +596,8 @@ func (wb *workbook) rels(name, dir string) (relations, error) {
 			continue
 		}
 		target := r.Target
-		if strings.HasPrefix(target, "/") {
-			target = strings.TrimPrefix(target, "/")
+		if after, ok := strings.CutPrefix(target, "/"); ok {
+			target = after
 		} else {
 			target = path.Join(dir, target)
 		}

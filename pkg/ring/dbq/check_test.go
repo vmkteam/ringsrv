@@ -165,3 +165,24 @@ func TestMask(t *testing.T) {
 	cr := mask("SELECT 1 -- a\r; DROP TABLE t", target.DriverPostgres)
 	assert.Contains(t, cr, "; DROP TABLE t", "a carriage return ends the comment, as it does for the server")
 }
+
+// The words that make PostgreSQL plan a write, outside literals, comments and
+// quoted names. Only used to explain a refusal the server already made, so a
+// column named update without quotes reading as a write costs a sentence, not
+// a call.
+func TestWritesData(t *testing.T) {
+	t.Parallel()
+	for sql, want := range map[string]bool{
+		`EXPLAIN WITH upd AS (UPDATE orders SET "statusId" = 8 RETURNING id) INSERT INTO shop."order_history" SELECT id FROM upd`: true,
+		`EXPLAIN DELETE FROM orders WHERE id = 1`:                          true,
+		`SELECT * FROM orders WHERE id = 1 FOR UPDATE`:                     true,
+		`merge into t using s on t.id = s.id when matched then do nothing`: true,
+		`SELECT * FROM orders WHERE note = 'UPDATE me'`:                    false,
+		`SELECT "update", "delete" FROM t`:                                 false,
+		`SELECT 1 -- delete later`:                                         false,
+		`SELECT $$insert$$`:                                                false,
+		`SELECT "statusId" FROM shop."order_history"`:                      false,
+	} {
+		assert.Equal(t, want, WritesData(target.DriverPostgres, sql), sql)
+	}
+}

@@ -1,6 +1,6 @@
 ---
 name: sentry
-description: Sentry через api_call — issues, события, релизы; что такое release у нас и почему ответ приходит урезанным.
+description: Sentry через api_call — issues, события (последнее, первое, самое полное), разброс тегов, релизы; что такое release у нас и почему ответ приходит урезанным.
 ---
 
 # Таргет `sentry` — ошибки
@@ -10,7 +10,8 @@ description: Sentry через api_call — issues, события, релизы
 
 `DefaultJQ` оставляет от списка issues только то, что нужно для триажа:
 `id`, `title`, `culprit`, `count`, `userCount`, `firstSeen`, `lastSeen`. Нужны другие
-поля — передайте свой `jq`.
+поля — передайте свой `jq`: он заменяет фильтр и видит сырое тело, список issues в нём —
+`.[]`, а не то, что оставил фильтр.
 
 **На этом таргете включена редакция PII.** Пока — в режиме `warn`: тело не
 меняется, а список правил, которые сработали бы (email, телефоны, карты, токены, IP),
@@ -36,6 +37,9 @@ timestamp-ы не трогаются — расследование остаёт
 | `/api/0/organizations/<org>/releases/` | релизы и их даты |
 | `/api/0/issues/<id>/` | одна issue целиком |
 | `/api/0/issues/<id>/events/latest/` | последнее событие: стектрейс, теги, контекст |
+| `/api/0/issues/<id>/events/oldest/` | первое событие: с какого релиза и запроса всё началось |
+| `/api/0/issues/<id>/events/recommended/` | событие, которое Sentry считает самым полным: со стектрейсом, breadcrumbs и контекстом |
+| `/api/0/issues/<id>/tags/release/` | в каких релизах issue встречается и сколько раз; так же `environment`, `server_name`, `transaction`, `url` |
 | `/api/0/projects/<org>/<project>/issues/` | issues одного проекта |
 
 ## Примеры
@@ -43,6 +47,8 @@ timestamp-ы не трогаются — расследование остаёт
 ```
 /api/0/organizations/<org>/issues/?query=is:unresolved&statsPeriod=24h&limit=10
 /api/0/issues/48213/events/latest/
+/api/0/issues/48213/events/oldest/
+/api/0/issues/48213/tags/release/
 /api/0/organizations/<org>/releases/?per_page=5
 ```
 
@@ -59,3 +65,8 @@ timestamp-ы не трогаются — расследование остаёт
   нему нельзя, не выровняв период.
 - **Новая issue ≠ новая ошибка.** Смотрите `firstSeen`: если он внутри периода — это
   регрессия и первый кандидат на разбор; если нет — фон.
+- **С какого релиза сломалось — `tags/release/`**, а не перебор событий: в ответе
+  каждый релиз с числом событий, `firstSeen` и `lastSeen`. Первое событие целиком —
+  `events/oldest/`.
+- **У `latest` бывает пустой стектрейс** (событие из логгера, обрезанное SDK). Тогда
+  `events/recommended/` — Sentry отдаёт событие с самым богатым контекстом.

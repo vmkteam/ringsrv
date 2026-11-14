@@ -1,6 +1,6 @@
 ---
 name: prom
-description: Prometheus через api_call — разрешённые пути, PromQL-примеры, форматы времени и типичные ошибки.
+description: Prometheus через api_call — разрешённые пути, PromQL-примеры, правила и горящие алерты, форматы времени и типичные ошибки.
 ---
 
 # Таргет `prom` — Prometheus
@@ -17,13 +17,15 @@ description: Prometheus через api_call — разрешённые пути,
 | `/api/v1/labels` | список имён меток |
 | `/api/v1/series` | серии по матчеру |
 | `/api/v1/label/<name>/values` | значения одной метки — так узнают список job, instance, status |
+| `/api/v1/alerts` | алерты, которые горят или ждут `for` прямо сейчас: метки, `state`, `activeAt` |
+| `/api/v1/rules?type=alert` | правила алертов с выражением, порогом и состоянием; `type=record` — правила записи |
 | `/api/v1/status/buildinfo` | версия Prometheus — проверка, что таргет вообще отвечает |
 
 Всё остальное (`/api/v1/admin/*`, `/-/reload`, `/api/v1/write`) не проходит: пути нет
 в allowlist, запрос вернёт `PathNotAllowed` со списком паттернов.
 
 Параметры запроса — только `query`, `time`, `timeout`, `start`, `end`, `step`, `limit`,
-`match[]`, `lookback_delta`, и `step` не короче `15s`: меньший шаг дублирует точки, а не
+`match[]`, `lookback_delta`, `type`, и `step` не короче `15s`: меньший шаг дублирует точки, а не
 добавляет их. Другое имя или меньший шаг — `QueryParamNotAllowed` со списком.
 
 ## Время
@@ -47,6 +49,15 @@ api_call(calls: [{target: "prom", method: "GET",
 /api/v1/query?query=up{job="apisrv"}
 /api/v1/query_range?query=histogram_quantile(0.99,sum by (le) (rate(app_http_request_duration_seconds_bucket{job="apisrv"}[5m])))&start=now-6h&end=now&step=60s
 /api/v1/label/job/values
+/api/v1/alerts
+/api/v1/rules?type=alert
+```
+
+Горит ли алерт и почему — `rules`, а не выражение, собранное заново по памяти. Ответ
+большой, поэтому свой `jq` (он видит сырое тело, поэтому начинается с `.data`):
+
+```
+jq: [.data.groups[].rules[] | select(.state != "inactive") | {name, state, query, alerts: [.alerts[] | {labels, activeAt, value}]}]
 ```
 
 ## Грабли
@@ -58,8 +69,12 @@ api_call(calls: [{target: "prom", method: "GET",
 - **Пустой ответ (`data.result == []`) — это не ошибка**, а «нет таких серий». Проверьте
   имя `job`: оно берётся из `[Repos.*].PromJob`, а не из имени сервиса.
 - **Фильтр по умолчанию различает две формы ответа**: у `query` и `query_range` он отдаёт
-  `.data.result`, у `labels`, `label/<name>/values`, `series` и `status/buildinfo` — `.data`
-  целиком, потому что там результат лежит прямо в нём. Сырое тело со `status` — `jq: "."`.
+  `.data.result`, у `labels`, `label/<name>/values`, `series`, `rules`, `alerts` и
+  `status/buildinfo` — `.data` целиком, потому что там результат лежит прямо в нём. Сырое
+  тело со `status` — `jq: "."`.
+- **Свой `jq` заменяет фильтр по умолчанию и видит сырое тело**, а не то, что фильтр
+  оставил: ряды — `.data.result[]`, а не `.[]`. Пустой ответ на свой `jq` чаще всего
+  значит, что путь в нём не тот: такой ответ приходит с `raw_shape` — путями сырого тела.
 - **Мгновенный `query` за прошлое** — это `query` + `time=now-3h`, а не `query_range`.
 - Метрики appkit: `app_http_requests_total`, `app_http_request_duration_seconds`;
   у zenrpc-сервисов — `app_rpc_*`.

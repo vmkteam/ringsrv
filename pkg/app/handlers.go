@@ -112,7 +112,7 @@ func (a *App) develOrigins() []string {
 
 func (a *App) registerMCPHandlers() {
 	zsrv := rpc.NewMCP(rpc.MCPDeps{
-		Info:          mcp.ServerInfo{Name: a.appName, Version: appkit.Version()},
+		Info:          mcp.ServerInfo{Name: a.appName, Version: Version()},
 		Docs:          a.docs,
 		Targets:       a.targets,
 		Upstream:      a.upstream,

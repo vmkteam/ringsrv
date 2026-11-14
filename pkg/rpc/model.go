@@ -52,7 +52,7 @@ type apiCallBase struct {
 	Method string `json:"method" jsonschema:"required,enum=GET,enum=POST,enum=PUT" jsonschema_description:"POST/PUT only where the target allows."`
 	Path   string `json:"path" jsonschema:"required" jsonschema_description:"From /, query allowed; no absolute URLs."`
 	Body   string `json:"body,omitempty" jsonschema_description:"JSON body (POST/PUT)."`
-	JQ     string `json:"jq,omitempty" jsonschema_description:"Omitted = target default (default_jq:true in answer); a dot = raw. Lists: [.[]|{ID,Status}]."`
+	JQ     string `json:"jq,omitempty" jsonschema_description:"Omitted = target default (default_jq:true in answer); a dot = raw. Own jq replaces the default and reads the raw body; empty result brings raw_shape. Lists: [.[]|{ID,Status}]."`
 	Intent string `json:"intent,omitempty" jsonschema_description:"Why, <=120 chars; audited. Required for writes."`
 }
 
@@ -89,6 +89,11 @@ type APICallItem struct {
 	// trimmed Sentry issue looks whole and the model never asks for the rest.
 	DefaultJQ bool `json:"default_jq,omitempty"`
 	Data      any  `json:"data,omitempty"`
+	// RawShape comes with an own jq that found nothing: the paths of the raw
+	// body it ran on. 56 of 99 Slack searches with an own jq came back empty
+	// because the filter was written for the default's shape, and the model
+	// read the empty list as "nobody wrote about it".
+	RawShape []string `json:"raw_shape,omitempty"`
 	// Redacted names the PII rules that matched: in warn mode the only sign, in
 	// redact mode what was replaced, so an absent field is not absent data.
 	Redacted []string `json:"redacted,omitempty"`

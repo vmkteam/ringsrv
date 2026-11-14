@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -476,4 +478,92 @@ func TestCodeError_CloneInProgress(t *testing.T) {
 	assert.Equal(t, ErrCodeTimeout, e.Code)
 	assert.Contains(t, e.Message, "apisrv")
 	assert.Contains(t, e.Message, "repeat the call")
+}
+
+// A search that ran past its cap is a timeout the caller fixes by asking for
+// less, not by asking again.
+func TestCodeError_GitTimeout(t *testing.T) {
+	t.Parallel()
+	err := fmt.Errorf("git: git grep %w after 30s", git.ErrTimeout)
+
+	e := ToolsService{}.codeError(err, "apisrv", "")
+
+	assert.Equal(t, ErrCodeTimeout, e.Code)
+	assert.Contains(t, e.Message, "git grep timed out after 30s")
+	assert.Contains(t, e.Message, "narrow it rather than repeat it")
+}
+
+// A search capped in one mirror keeps the matches of the others and names the
+// one that did not finish; when none finished, the cap is the answer.
+func TestCodeSearch_OneRepoTimesOut(t *testing.T) {
+	t.Parallel()
+	origin := t.TempDir()
+	gittest.Git(t, origin, "init", "--initial-branch=master")
+	gittest.Write(t, origin, "internal/rpc/order.go", "package rpc\n\nfunc Create() error {\n\treturn nil\n}\n")
+	gittest.Git(t, origin, "add", ".")
+	gittest.Git(t, origin, "commit", "-m", "ABC-1 initial")
+	sha := gittest.Git(t, origin, "rev-parse", "HEAD")
+
+	// git grep hangs in the slowsrv mirror only; everything else is real git.
+	realGit, err := exec.LookPath("git")
+	require.NoError(t, err)
+	root := t.TempDir()
+	wrapper := filepath.Join(root, "git")
+	script := "#!/bin/sh\nif [ \"$1\" = grep ]; then case \"$(pwd -P)\" in */slowsrv.git) sleep 30;; esac; fi\nexec " + realGit + " \"$@\"\n"
+	require.NoError(t, os.WriteFile(wrapper, []byte(script), 0o700))
+
+	cat, err := target.Parse([]byte(`
+Env = "dev"
+
+[Profiles.prom]
+Description  = "dev · Prometheus"
+BaseURL      = "https://prom.example.com"
+AllowMethods = ["GET"]
+AllowPaths   = ["^/api/v1/query$"]
+
+[Roles.developer]
+Description = "reads code"
+Groups      = ["ringsrv-developers"]
+Tools       = ["code_search"]
+Targets     = ["prom"]
+Repos       = ["*"]
+
+[Repos.apisrv]
+Description   = "test repo"
+CloneURL      = "file://` + origin + `"
+DefaultBranch = "master"
+
+[Repos.slowsrv]
+Description   = "the same history, a mirror whose search hangs"
+CloneURL      = "file://` + origin + `"
+DefaultBranch = "master"
+`))
+	require.NoError(t, err)
+	s := NewToolsService(ToolsDeps{
+		Targets: cat,
+		Repos: git.New(git.Options{
+			ReposDir:     filepath.Join(root, "repos"),
+			WorktreesDir: filepath.Join(root, "worktrees"),
+			Git:          wrapper,
+			Timeout:      time.Minute,
+			GrepTimeout:  300 * time.Millisecond,
+		}),
+		Sessions: ring.NewSessions(time.Hour, nil),
+	})
+	ctx := ctxWithGroups("ringsrv-developers")
+
+	res, err := s.Call(ctx, ToolCodeSearch, map[string]any{"query": "Create", "ref": sha, "repos": []any{"apisrv", "slowsrv"}})
+	require.NoError(t, err)
+	require.False(t, res.IsError, res.Content[0].Text)
+	var out CodeSearchResult
+	require.NoError(t, json.Unmarshal([]byte(res.Content[0].Text), &out))
+	require.NotEmpty(t, out.Matches, "the mirror that answered still counts")
+	assert.Contains(t, out.Matches[0], "apisrv internal/rpc/order.go:3:")
+	assert.Equal(t, []string{"slowsrv"}, out.ReposTimedOut)
+
+	res, err = s.Call(ctx, ToolCodeSearch, map[string]any{"query": "Create", "ref": sha, "repos": []any{"slowsrv"}})
+	require.NoError(t, err)
+	require.True(t, res.IsError)
+	assert.Contains(t, res.Content[0].Text, ErrCodeTimeout)
+	assert.Contains(t, res.Content[0].Text, "narrow it rather than repeat it")
 }

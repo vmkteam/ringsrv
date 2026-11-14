@@ -79,11 +79,9 @@ func (s *Server) accept(cfg *ssh.ServerConfig, dir string) {
 		if err != nil {
 			return
 		}
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
+		s.wg.Go(func() {
 			s.serve(conn, cfg, dir)
-		}()
+		})
 	}
 }
 

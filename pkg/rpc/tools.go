@@ -597,7 +597,15 @@ func (s ToolsService) oneAPICall(ctx context.Context, acc target.Access, call AP
 // applyAnswer records a call that produced an answer and puts the answer on its
 // item.
 func applyAnswer(item *APICallItem, answer *proxy.Answer, target string, rec *auditRecord) {
-	observe(ToolAPICall, target, outcomeOK)
+	// An error answered with 200 is the upstream's refusal all the same: counted
+	// with the other upstream errors, so a token missing a scope shows up on the
+	// dashboard rather than as a run of successes.
+	if answer.UpstreamError != "" {
+		observe(ToolAPICall, target, outcomeError)
+	} else {
+		observe(ToolAPICall, target, outcomeOK)
+	}
+	rec.UpstreamError = answer.UpstreamError
 	observeRedactions(target, answer.Redacted)
 	// Which rules fired, not what they fired on.
 	rec.Masked = answer.Redacted.Names()
@@ -611,6 +619,7 @@ func applyAnswer(item *APICallItem, answer *proxy.Answer, target string, rec *au
 
 	item.Status, item.Truncated, item.BytesTotal = answer.Status, answer.Truncated, answer.BytesTotal
 	item.DefaultJQ, item.Data, item.Redacted = answer.DefaultJQ, answer.Data, answer.Redacted.Names()
+	item.RawShape = answer.RawShape
 	item.img = answer.Image
 	if answer.AsText {
 		item.Data = answer.Text
@@ -728,7 +737,7 @@ func (s ToolsService) checkRoute(prof *target.Profile, call APICall, rec *auditR
 		})
 	}
 	// On an API that lives behind one path the allowlist is the method in the body.
-	if err := prof.CheckRPC(call.Body); err != nil {
+	if err := prof.CheckRPC(call.Method, call.Body); err != nil {
 		return deny(ToolError{
 			Code:       ErrCodeRPCMethodNotAllowed,
 			Message:    fmt.Sprintf("target %q: %s", call.Target, err),
@@ -944,7 +953,7 @@ func (s ToolsService) apiCallDescription(acc target.Access) string {
 	}
 	// Two habits the log showed missing: a fan-out over ids went one call per
 	// turn (211 calls for three questions), and large answers went unfiltered.
-	b.WriteString("\nВеер по id (проекты, MR, задачи) — одним вызовом. Ответы сужай jq; без jq — фильтр таргета (default_jq), \".\" — целиком; max_bytes — на весь вызов.\n")
+	b.WriteString("\nВеер по id (проекты, MR, задачи) — одним вызовом. Ответы сужай jq: свой заменяет фильтр таргета и видит сырое тело, пустой ответ приходит с raw_shape; без jq — фильтр таргета (default_jq), \".\" — целиком; max_bytes — на весь вызов.\n")
 	b.WriteString("\nПути, примеры, грабли: help(<name>), несколько имён сразу.\n")
 	if acc.AllowWrite {
 		b.WriteString("Write: intent обязателен, лимит на сессию, только отдельным вызовом.\n")

@@ -240,6 +240,10 @@ type CodeSearchResult struct {
 	// one SHA lives in one repository, and the answer says which it skipped
 	// rather than failing on them.
 	ReposWithoutRef []string `json:"repos_without_ref,omitempty"`
+	// ReposTimedOut lists the repositories whose search ran past its cap: the
+	// matches are from the others, and these need a narrower search of their
+	// own.
+	ReposTimedOut []string `json:"repos_timed_out,omitempty"`
 	// Budget is the hourly work budget with this search paid for.
 	Budget *Budget `json:"budget,omitempty"`
 }
@@ -361,7 +365,7 @@ func (s ToolsService) searchCode(ctx context.Context, arguments map[string]any, 
 
 	rec.Method, rec.Truncated = found.Ref, found.Truncated
 
-	out := CodeSearchResult{Ref: found.Ref, Truncated: found.Truncated, Matches: make([]string, 0, len(found.Matches)), ReposWithoutRef: found.Skipped, Budget: budgetOf(ctx)}
+	out := CodeSearchResult{Ref: found.Ref, Truncated: found.Truncated, Matches: make([]string, 0, len(found.Matches)), ReposWithoutRef: found.Skipped, ReposTimedOut: found.TimedOut, Budget: budgetOf(ctx)}
 	for _, m := range found.Matches {
 		// git's own convention: ":" around the line number of a match, "-"
 		// around a context line.
@@ -419,6 +423,11 @@ func (s ToolsService) codeError(err error, repo, what string) ToolError {
 	case errors.Is(err, git.ErrCloning):
 		e.Code = ErrCodeTimeout
 		e.Message = fmt.Sprintf("%s: the mirror is being cloned for the first time, which takes minutes for a large repository; repeat the call in a minute", repo)
+	case errors.Is(err, git.ErrTimeout):
+		// Repeating the same call costs the same time again: what helps is a
+		// smaller one.
+		e.Code = ErrCodeTimeout
+		e.Message = fmt.Sprintf("%s: %s; narrow it rather than repeat it — a literal instead of a regexp, no leading .*, a path_glob, fewer repositories, a shorter range", repo, err)
 	case errors.Is(err, git.ErrBadPath):
 		e.Code = ErrCodePathDenied
 		e.Message = fmt.Sprintf("%s: %s", what, err)

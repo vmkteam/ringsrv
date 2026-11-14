@@ -1,6 +1,6 @@
 ---
 name: gitlab
-description: GitLab через api_call — файлы на конкретном SHA, сравнение, коммиты, MR, пайплайны и логи джоб; кодирование путей.
+description: GitLab через api_call — проект по id, пути или имени, файлы на конкретном SHA, сравнение, коммиты, MR, пайплайны и логи джоб; кодирование путей.
 ---
 
 # Таргет `gitlab` — код, MR и пайплайны
@@ -13,8 +13,9 @@ description: GitLab через api_call — файлы на конкретном
 
 | Путь | Зачем |
 |---|---|
-| `/api/v4/version` | жив ли хост и принят ли токен — единственный путь без id проекта |
-| `/api/v4/projects/<id>` | проект: имя, дефолтная ветка |
+| `/api/v4/version` | жив ли хост и принят ли токен |
+| `/api/v4/projects?search=<name>&simple=true` | найти проект по имени, когда его нет в `repo_map` |
+| `/api/v4/projects/<id>` | проект: имя, дефолтная ветка; вместо `<id>` годится путь `group%2Fproject` |
 | `/api/v4/projects/<id>/repository/files/<path>/raw?ref=<sha>` | файл на конкретном коммите |
 | `/api/v4/projects/<id>/repository/tree?ref=<sha>&path=<dir>` | что лежит в каталоге |
 | `/api/v4/projects/<id>/repository/compare?from=<sha>&to=<sha>` | что изменилось между релизами |
@@ -36,6 +37,8 @@ description: GitLab через api_call — файлы на конкретном
 ## Примеры
 
 ```
+/api/v4/projects?search=billing&simple=true&per_page=20
+/api/v4/projects/backend%2Fbilling/merge_requests/1012
 /api/v4/projects/42/repository/files/internal%2Frpc%2Forder.go/raw?ref=abc1234
 /api/v4/projects/42/repository/compare?from=abc1234&to=def5678
 /api/v4/projects/42/repository/commits?ref_name=abc1234&path=internal/rpc&per_page=20
@@ -52,11 +55,15 @@ description: GitLab через api_call — файлы на конкретном
   `feature/x` → `feature%2Fx`.
 - **`ref` обязателен и должен быть SHA деплоя**, а не веткой. Смотреть `master` вместо
   задеплоенного коммита — классическая ошибка расследования.
-- **`id` проекта числовой**, берётся из `repo_map` (`GitLabProject`). Путь вида
-  `backend%2Fapisrv` тоже работает, но в каталоге хранится число.
-- **Все пути, кроме `/api/v4/version`, требуют id проекта**, и каждый начинается
-  с префикса `/api/v4`; `/projects?per_page=1` — это `PathNotAllowed`, а не «нет
-  доступа». Живость хоста и валидность токена проверяются `/api/v4/version`.
+- **Проект — числом или путём.** Число берётся из `repo_map` (`GitLabProject`). Путь
+  копируется из ссылки на MR, слэш кодируется: `git.example.com/backend/billing/-/merge_requests/7`
+  → `/api/v4/projects/backend%2Fbilling/merge_requests/7`.
+- **Не знаете проекта — ищите, а не перебирайте id.** `/api/v4/projects?search=<имя>&simple=true`
+  отдаёт `id` и `path_with_namespace` всех подходящих. Проект, которого токен не видит,
+  отвечает 404 так же, как несуществующий, поэтому перебор id подряд ничего не находит.
+- **Каждый путь начинается с `/api/v4`**: `/projects?per_page=1` без префикса — это
+  `PathNotAllowed`, а не «нет доступа». Живость хоста и валидность токена проверяются
+  `/api/v4/version`.
 - **MR адресуется по `iid`** — номеру внутри проекта, тому, что в URL и в `!1012`, —
   а не по глобальному `id` из списка.
 - **`compare` и `changes` на большом диапазоне возвращают мегабайты.** Сузьте диапазон

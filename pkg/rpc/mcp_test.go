@@ -183,6 +183,19 @@ func TestMCP_ResourcesListAndRead(t *testing.T) {
 	assert.Contains(t, first["text"], "query_range")
 }
 
+// Clients ask for templates on connect because the server declares resources.
+// There are none, and that is an answer: "method not found" used to put an
+// error in both logs for it.
+func TestMCP_ResourceTemplatesList(t *testing.T) {
+	t.Parallel()
+	srv := newMCPTestServer(t)
+
+	res := call(t, srv, "resources/templates/list", nil, "")
+	templates, ok := res["resourceTemplates"].([]any)
+	require.True(t, ok, "%v", res)
+	assert.Empty(t, templates)
+}
+
 func TestMCP_PromptsListAndGet(t *testing.T) {
 	t.Parallel()
 	srv := newMCPTestServer(t)

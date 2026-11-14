@@ -254,7 +254,7 @@ func (a *App) initUpstream() {
 	}
 	a.upstream = upstream.New(upstream.Options{
 		AppName:       a.appName,
-		Version:       appkit.Version(),
+		Version:       Version(),
 		Timeout:       a.cfg.Limits.UpstreamTimeout,
 		MaxConcurrent: a.cfg.Limits.MaxConcurrent,
 		MaxBodyBytes:  maxBody,

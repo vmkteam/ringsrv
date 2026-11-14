@@ -18,7 +18,6 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/getsentry/sentry-go"
 	"github.com/namsral/flag"
-	"github.com/vmkteam/appkit"
 	"github.com/vmkteam/embedlog"
 )
 
@@ -45,7 +44,7 @@ func main() {
 	}
 	slog.SetDefault(sl.Log()) // set default logger
 
-	version := appkit.Version()
+	version := app.Version()
 	sl.Print(ctx, "starting", "app", appName, "version", version)
 	md, err := toml.DecodeFile(*flConfigPath, &cfg)
 	exitOnError(err)

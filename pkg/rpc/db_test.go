@@ -719,3 +719,23 @@ func TestInstructions_NameDBTools(t *testing.T) {
 	}
 	assert.Contains(t, text, "вызови db_introspect", "the one habit that saves the first query: introspect first")
 }
+
+// A refusal of the read-only role says which of its two readings applies:
+// planning a write, which this role can never do, or a grant that is missing,
+// which is not the same as the data being absent. Neither is logged as the
+// database failing.
+func TestDBError_Permission(t *testing.T) {
+	t.Parallel()
+	refused := &dbq.Error{Kind: dbq.FailUpstream, Err: fmt.Errorf("%w: permission denied for table order_history", dbq.ErrPermission)}
+
+	write := &auditRecord{SQL: `EXPLAIN WITH upd AS (UPDATE orders SET x = 1 RETURNING id) INSERT INTO "order_history" SELECT id FROM upd`}
+	e := ToolsService{}.dbError(t.Context(), ToolDBQuery, "shop-pg", refused, write)
+	assert.Equal(t, ErrCodeUpstream, e.Code)
+	assert.Contains(t, e.Message, "permission denied for table order_history")
+	assert.Contains(t, e.Message, "EXPLAIN the SELECT that feeds the write")
+
+	read := &auditRecord{SQL: `SELECT * FROM "order_history" LIMIT 5`}
+	e = ToolsService{}.dbError(t.Context(), ToolDBQuery, "shop-pg", refused, read)
+	assert.Contains(t, e.Message, "not granted SELECT")
+	assert.Contains(t, e.Message, "not missing data")
+}

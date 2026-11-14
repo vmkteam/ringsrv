@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -529,19 +530,37 @@ func codeHint(table string, refs []target.CodeRef) string {
 	return "enum'ы и модели — " + strings.Join(calls, "; ")
 }
 
+// permissionMessage says what a refusal of the role means, because both
+// readings of "permission denied" went wrong in practice: an EXPLAIN of a fix
+// script was read as a missing SELECT grant, and a missing grant is easily read
+// as "there is no such data".
+func permissionMessage(serverText string, writes bool) string {
+	if writes {
+		return serverText + " — this role only reads, and PostgreSQL checks write privileges while planning: even a plain EXPLAIN of INSERT, UPDATE, DELETE or MERGE (or SELECT … FOR UPDATE) is refused here. EXPLAIN the SELECT that feeds the write instead."
+	}
+	return serverText + " — the role was not granted SELECT on this object. That is a gap in the grants, not missing data: say so rather than conclude the rows are absent."
+}
+
 // dbError maps a failed call onto the envelope. The server's own text is the
 // documentation; unproven says so in as many words.
 func (s ToolsService) dbError(ctx context.Context, tool, name string, e *dbq.Error, rec *auditRecord) *ToolError {
 	out := ToolError{Message: e.Error(), Keys: e.Keys}
-	switch e.Kind {
-	case dbq.FailBadArgs:
+	switch {
+	case errors.Is(e, dbq.ErrPermission):
+		// The role doing its job, not the database failing: an error line for
+		// it sent a log review looking for a broken grant that was a write the
+		// role was right to refuse. Only PostgreSQL reports it this way.
+		out.Code = ErrCodeUpstream
+		out.Message = permissionMessage(e.Error(), dbq.WritesData(target.DriverPostgres, rec.SQL))
+		s.Print(ctx, "database refused", labelTarget, name, "err", rec.LogText(e.Error()))
+	case e.Kind == dbq.FailBadArgs:
 		out.Code = ErrCodeBadArgs
-	case dbq.FailTimeout:
+	case e.Kind == dbq.FailTimeout:
 		out.Code = ErrCodeTimeout
 		s.Error(ctx, "database timeout", labelTarget, name, "err", rec.LogText(e.Error()))
-	case dbq.FailJQ:
+	case e.Kind == dbq.FailJQ:
 		out.Code = ErrCodeJQFailed
-	case dbq.FailUnproven:
+	case e.Kind == dbq.FailUnproven:
 		out.Code = ErrCodeUpstream
 		s.Error(ctx, "database target unproven", labelTarget, name, "err", rec.LogText(e.Error()))
 	default:

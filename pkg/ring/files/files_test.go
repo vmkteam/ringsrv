@@ -53,8 +53,7 @@ func fetch(t *testing.T, f *filestest.Slack, path string, budget int) (*Result, 
 }
 
 func refusalCode(err error) string {
-	var ref *RefusedError
-	if errors.As(err, &ref) {
+	if ref, ok := errors.AsType[*RefusedError](err); ok {
 		return ref.Code
 	}
 	return ""

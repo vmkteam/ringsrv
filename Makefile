@@ -8,7 +8,7 @@ ifeq ($(RACE),1)
 	GOFLAGS+=-race
 endif
 
-LINT_VERSION := v2.13.2
+LINT_VERSION := v2.15.0
 
 MAIN := ${NAME}/cmd/${NAME}
 
@@ -61,9 +61,12 @@ token:
 	echo "$(TARGETS_FILE): Authorization: Basic for $(TOKEN_USER) written, expires by $$expires"
 
 tools:
-	@curl -sfL https://raw.githubusercontent.com/golangci/golangci-lint/${LINT_VERSION}/install.sh | sh -s -- -b $(go env GOPATH)/bin ${LINT_VERSION}
+	@curl -sfL https://raw.githubusercontent.com/golangci/golangci-lint/${LINT_VERSION}/install.sh | sh -s -- -b $(shell go env GOPATH)/bin ${LINT_VERSION}
 
+# fmt: go fix first — it rewrites code to the idioms of the go version in
+# go.mod (errors.AsType, WaitGroup.Go) — then the formatters over the result.
 fmt:
+	@go fix ./...
 	@golangci-lint fmt
 
 lint:

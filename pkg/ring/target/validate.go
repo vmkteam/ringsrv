@@ -373,6 +373,7 @@ func (p *Profile) validate(env string) error {
 	}
 
 	errs = append(errs, p.validateAllowHeaders()...)
+	errs = append(errs, validateProfileTimeout(p.Timeout)...)
 
 	errs = append(errs, p.validateMethods()...)
 
@@ -867,6 +868,26 @@ func (p *Profile) validateTimeBodyParams() []error {
 	params, paramErrs := compileBodyTimeParams(p.TimeBodyParams, p.TimeFormat)
 	p.bodyTimeParams = params
 	return append(errs, paramErrs...)
+}
+
+// MaxProfileTimeout caps a profile's Timeout. The HTTP server cuts every answer
+// at two minutes, so a longer wait ends with the client getting nothing, and
+// what is left has to cover the rest of the batch and the tool's own work.
+const MaxProfileTimeout = 90 * time.Second
+
+// validateProfileTimeout reads Timeout the way a database's is read: TOML
+// decodes a bare integer into nanoseconds, so a "60" would refuse every call on
+// the spot.
+func validateProfileTimeout(t time.Duration) []error {
+	switch {
+	case t < 0:
+		return []error{fmt.Errorf("field Timeout %s must be >= 0", t)}
+	case t > 0 && t < time.Second:
+		return []error{fmt.Errorf("field Timeout %s is under a second — write it as a duration string, like \"60s\"", t)}
+	case t > MaxProfileTimeout:
+		return []error{fmt.Errorf("field Timeout %s is over %s — the server cuts the answer to the client at two minutes", t, MaxProfileTimeout)}
+	}
+	return nil
 }
 
 // forbiddenReadOnlyRPC are JSON-RPC methods that change state at the upstreams

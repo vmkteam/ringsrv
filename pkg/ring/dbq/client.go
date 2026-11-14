@@ -123,6 +123,9 @@ type Proof struct {
 // Sentinel errors a client wraps so the domain can tell the failure apart
 // without knowing the driver's own error types.
 var (
+	// ErrPermission is the server refusing the role an object or an action:
+	// a grant that is missing, or a write the read-only role was never given.
+	ErrPermission = errors.New("insufficient privilege")
 	// ErrTimeout is a query the server or the client cut on time.
 	ErrTimeout = errors.New("query timed out")
 	// ErrUnknownTable is a query or an introspection of a table that is

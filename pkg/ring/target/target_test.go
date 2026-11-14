@@ -2,6 +2,7 @@ package target
 
 import (
 	"maps"
+	"net/http"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -57,8 +58,8 @@ func TestDistCatalogIsValid(t *testing.T) {
 	require.True(t, ok)
 	assert.True(t, topsrv.Allows("POST", "/api/v1/rpc/"))
 	assert.False(t, topsrv.Allows("GET", "/api/v1/rpc/"), "the server answers GET with 405 anyway")
-	require.NoError(t, topsrv.CheckRPC(`{"jsonrpc":"2.0","id":1,"method":"alert.list"}`))
-	require.Error(t, topsrv.CheckRPC(`{"jsonrpc":"2.0","id":1,"method":"alert.silence"}`), "the write behind the same path")
+	require.NoError(t, topsrv.CheckRPC(http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"alert.list"}`))
+	require.Error(t, topsrv.CheckRPC(http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"alert.silence"}`), "the write behind the same path")
 
 	// Two windows in one body, each in the format its method reads
 	// (weblogs:read, 2026-09-09): the metric range in unix seconds, the log
@@ -1189,4 +1190,33 @@ func replaceLine(toml, prefix, line string) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// A profile may wait longer than the instance default for an API whose honest
+// answer is slow, written as a duration and within what the server can still
+// deliver to the client.
+func TestParse_ProfileTimeout(t *testing.T) {
+	t.Parallel()
+	with := func(line string) string {
+		return replaceLine(validTOML, "AllowPaths", `AllowPaths   = ["^/api/v1/query$"]`+"\n"+line)
+	}
+
+	c, err := Parse([]byte(with(`Timeout = "60s"`)))
+	require.NoError(t, err)
+	p, _ := c.Profile("prom")
+	assert.Equal(t, 60*time.Second, p.Upstream().Timeout)
+
+	c, err = Parse([]byte(validTOML))
+	require.NoError(t, err)
+	p, _ = c.Profile("prom")
+	assert.Zero(t, p.Upstream().Timeout, "unset leaves the instance default")
+
+	for line, want := range map[string]string{
+		`Timeout = 60`:    "under a second",
+		`Timeout = "-1s"`: "must be >= 0",
+		`Timeout = "2m"`:  "is over 1m30s",
+	} {
+		_, err := Parse([]byte(with(line)))
+		require.ErrorContains(t, err, want, line)
+	}
 }
