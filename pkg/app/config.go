@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/vmkteam/ringsrv/pkg/ring/md"
 )
 
 // Defaults for the limits a config may leave at zero; Validate fills them in and
@@ -45,6 +47,7 @@ func (c *Config) Validate() (applied []string, err error) {
 	errs = append(errs, limitErrs...)
 	errs = append(errs, c.validateRateLimit()...)
 	errs = append(errs, c.validateAPIKeys()...)
+	errs = append(errs, c.validateKnowledge()...)
 
 	return applied, errors.Join(errs...)
 }
@@ -165,4 +168,33 @@ func (c *Config) validateAPIKeys() []error {
 		}
 	}
 	return errs
+}
+
+// validateKnowledge checks the section, not the pack: the pack is read and
+// checked against the catalogue once the catalogue is loaded (LoadKnowledge).
+// The scheme is what resources/read routes by, so it may not overlap the
+// built-in one in either direction.
+func (c *Config) validateKnowledge() []error {
+	k := c.Knowledge
+	if k.Dir == "" {
+		return nil
+	}
+	var errs []error
+	switch {
+	case k.URIScheme == "":
+		errs = append(errs, errors.New("Knowledge.URIScheme is required when Knowledge.Dir is set"))
+	case !strings.HasSuffix(k.URIScheme, "/"):
+		errs = append(errs, fmt.Errorf("Knowledge.URIScheme %q must end with \"/\": a path is appended to it", k.URIScheme))
+	case overlaps(k.URIScheme, md.URIScheme):
+		errs = append(errs, fmt.Errorf("Knowledge.URIScheme %q overlaps the built-in %q", k.URIScheme, md.URIScheme))
+	}
+	if k.FoldOver < 0 {
+		errs = append(errs, fmt.Errorf("Knowledge.FoldOver %d must be >= 0", k.FoldOver))
+	}
+	return errs
+}
+
+// overlaps reports whether either scheme is a prefix of the other.
+func overlaps(a, b string) bool {
+	return strings.HasPrefix(a, b) || strings.HasPrefix(b, a)
 }

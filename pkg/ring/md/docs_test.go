@@ -257,3 +257,24 @@ func renderPrompt(lib *doc.Library, name string, args map[string]string) (string
 	_, text, err := lib.Render(name, args)
 	return text, err
 }
+
+// Every built-in prompt says what it cannot do without, in words the server
+// knows: a prompt with no requires: would be offered on an instance it cannot
+// work on, and a typo in one would hide it everywhere.
+func TestPromptsDeclareRequires(t *testing.T) {
+	t.Parallel()
+	req, err := md.PromptRequires()
+	require.NoError(t, err)
+
+	lib, err := doc.Load(md.FS, md.Root, doc.Options{URIScheme: md.URIScheme})
+	require.NoError(t, err)
+	require.NotEmpty(t, lib.Prompts())
+	for _, p := range lib.Prompts() {
+		families, ok := req[p.Name]
+		require.True(t, ok, p.Name)
+		assert.NotEmpty(t, families, "prompt %s declares no requires:", p.Name)
+		for _, f := range families {
+			assert.Contains(t, md.Families, f, "prompt %s requires an unknown family", p.Name)
+		}
+	}
+}

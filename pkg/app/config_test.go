@@ -339,6 +339,14 @@ func TestConfigValidate(t *testing.T) {
 		"negative db rows":           {func(c *Config) { c.Limits.DBMaxRows = -1 }, []string{"Limits.DBMaxRows"}},
 		"negative rate limit":        {func(c *Config) { c.RateLimit.PerUserRPM = -1 }, []string{"RateLimit.PerUserRPM"}},
 		"api key without a hash":     {func(c *Config) { c.APIKeys = []auth.Key{{UserID: "x"}} }, []string{"ApiKeys[0]: KeyHash"}},
+		"knowledge needs a scheme":   {func(c *Config) { c.Knowledge.Dir = "/kb" }, []string{"Knowledge.URIScheme is required"}},
+		"knowledge scheme ends in /": {func(c *Config) { c.Knowledge.Dir, c.Knowledge.URIScheme = "/kb", "kb:" }, []string{`must end with "/"`}},
+		"knowledge scheme overlaps": {func(c *Config) {
+			c.Knowledge.Dir, c.Knowledge.URIScheme = "/kb", "ringsrv://kb/"
+		}, []string{"overlaps the built-in"}},
+		"negative fold": {func(c *Config) {
+			c.Knowledge.Dir, c.Knowledge.URIScheme, c.Knowledge.FoldOver = "/kb", "kb://x/", -1
+		}, []string{"Knowledge.FoldOver"}},
 		"every finding at once": {func(c *Config) {
 			c.Server.Port = 0
 			c.OIDC.Required = true

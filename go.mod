@@ -5,6 +5,7 @@ go 1.27.0
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/ClickHouse/clickhouse-go/v2 v2.51.0
+	github.com/adrg/frontmatter v0.2.0
 	github.com/getsentry/sentry-go v0.50.0
 	github.com/go-pg/pg/v10 v10.15.1
 	github.com/itchyny/gojq v0.12.20
@@ -29,7 +30,6 @@ require (
 
 require (
 	github.com/ClickHouse/ch-go v0.75.0 // indirect
-	github.com/adrg/frontmatter v0.2.0 // indirect
 	github.com/andybalholm/brotli v1.3.0 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect

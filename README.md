@@ -117,6 +117,13 @@ The published images are `vmkteam/ringsrv` on Docker Hub and
 [code-graph-mcp](https://github.com/sdsrss/code-graph-mcp) AST engine; the config
 arrives through `RINGSRV_CONFIG`, and the catalogue by mounting `cfg/`.
 
+The binary lives at **`/opt/ringsrv/ringsrv`**, and that path is kept from
+release to release: an image that needs neither the code tools nor the AST
+engine — an instance for data questions with a knowledge pack — takes the
+binary alone (`COPY --from=vmkteam/ringsrv:<tag> /opt/ringsrv/ringsrv …`) onto
+a base of its own. The binary is static; with `Storage.ReposDir` empty it never
+calls git. See "The knowledge pack" in [`cfg/README.md`](cfg/README.md).
+
 ## Layout
 
 ```
@@ -126,6 +133,8 @@ pkg/rpc/              the API layer: MCP namespaces, the tool registry, its own 
 pkg/ring/             the domain: sessions, jq, the shape of an answer
 pkg/ring/target/      targets.toml: parsing, validation, resolving roles
 pkg/ring/md/          cheat sheets and scenarios: the content in md/ travels inside the binary
+pkg/ring/kb/          the knowledge pack: an instance's own texts, loaded and checked at boot
+docs/kb-example/      an example pack against the example catalogue in cfg/
 pkg/ring/code/        the code manager: mirrors, the engine, history, blast_radius, why
 pkg/ring/proxy/       the api_call pipeline: request → jq → redaction → truncation
 pkg/ring/public/      keeping a chat's answers to its public channels

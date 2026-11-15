@@ -10,25 +10,30 @@ import (
 	"github.com/vmkteam/mcpkit/redact"
 )
 
-// MaxAnswerBytes is the most a call may ask for in max_bytes. The target and
-// the instance defaults are the operator's numbers and are not capped here;
-// the argument is the model's, and without a ceiling it lifted the answer to
-// whatever the client read from the upstream.
+// MaxAnswerBytes is the most a call may ask for in max_bytes where the operator
+// set less. The target and the instance defaults are the operator's numbers and
+// are not capped here; the argument is the model's, and without a ceiling it
+// lifted the answer to whatever the client read from the upstream.
 const MaxAnswerBytes = 256 << 10
 
 // PickLimit picks the answer size cap: the call wins over the target, the
-// target over the instance default, and the call never wins past
-// MaxAnswerBytes.
+// target over the instance default. The call may narrow the operator's limit,
+// or widen it — up to MaxAnswerBytes, or up to the operator's own limit where
+// that is larger. A target set to a megabyte used to answer a call asking for
+// half of one with a quarter: less than not asking at all.
 func PickLimit(call, target, instance int) int {
+	operator := target
+	if operator <= 0 {
+		operator = instance
+	}
+	ceiling := max(MaxAnswerBytes, operator)
 	switch {
-	case call > MaxAnswerBytes:
-		return MaxAnswerBytes
+	case call > ceiling:
+		return ceiling
 	case call > 0:
 		return call
-	case target > 0:
-		return target
 	default:
-		return instance
+		return operator
 	}
 }
 

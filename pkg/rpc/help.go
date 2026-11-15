@@ -7,7 +7,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
+	"github.com/vmkteam/ringsrv/pkg/ring/kb"
 	"github.com/vmkteam/ringsrv/pkg/ring/target"
 
 	"github.com/vmkteam/mcpkit/audit"
@@ -25,6 +27,10 @@ const ToolHelp = "help"
 // in the error names only what the caller may read.
 const ErrCodeSheetUnknown = "SheetUnknown"
 
+// ErrCodeTopicUnreadable is a topic of the knowledge pack help cannot hand out
+// as text — a picture, an archive — with where to read it instead.
+const ErrCodeTopicUnreadable = "TopicUnreadable"
+
 // The sheets that are not about a target: one per family of tools, and one
 // for the file route every target with files shares.
 const (
@@ -37,13 +43,15 @@ const (
 // other tools — targets of api_call, or code / db. A list, because the log shows
 // sheets fetched one at a time, seconds apart, in runs of two to four.
 type HelpArgs struct {
-	Names []string `json:"names,omitempty" jsonschema_description:"Targets from api_call, or code / db; up to 6. Empty: the list."`
+	Names []string `json:"names,omitempty" jsonschema_description:"Names from the list help() returns; one ending in / lists a directory; up to 6. Empty: the list."`
 }
 
-// HelpSheet is one row of the list.
+// HelpSheet is one row of the list. A directory of the knowledge pack too big
+// to list whole is one row ending in "/", with how many topics it holds.
 type HelpSheet struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+	Count       int    `json:"count,omitempty"`
 }
 
 // HelpResult is either the sheets asked for or the list of what there is,
@@ -63,6 +71,9 @@ type HelpItem struct {
 	Index int    `json:"index"`
 	Name  string `json:"name"`
 	Text  string `json:"text,omitempty"`
+	// Entries answer a name ending in "/": the topics of that directory of the
+	// knowledge pack, without their texts.
+	Entries []HelpSheet `json:"entries,omitempty"`
 	// Error names the refusal, with the list of readable sheets attached the
 	// way a single call used to answer.
 	Error *ToolError `json:"error,omitempty"`
@@ -70,10 +81,41 @@ type HelpItem struct {
 
 var helpInputSchema = mcp.SchemaFor(HelpArgs{})
 
-// helpDescription is static on purpose: the names it would list are already
+// helpDescription is static per instance: the names it would list are already
 // in the api_call description, and every byte here is paid on every request.
+// What it names follows the instance — targets only where the catalogue has
+// profiles, a family only where the instance serves it, the knowledge pack only
+// where there is one — so that an instance of databases alone does not send the
+// model looking for api_call.
 func (s ToolsService) helpDescription() string {
-	return strings.ToUpper(s.env) + " · шпаргалки: пути, примеры и грабли таргетов api_call или инструментов (code, db, files). names — список имён за один вызов; без names — список шпаргалок. Прочитай перед первым вызовом к таргету."
+	u := s.surface()
+	var sheets string
+	switch fams := strings.Join(u.families(), ", "); {
+	case u.api && fams != "":
+		sheets = "шпаргалки: пути, примеры и грабли таргетов api_call или инструментов (" + fams + ")."
+	case u.api:
+		sheets = "шпаргалки: пути, примеры и грабли таргетов api_call."
+	case fams != "":
+		sheets = "шпаргалки: примеры и грабли инструментов (" + fams + ")."
+	}
+	parts := []string{strings.ToUpper(s.env) + " ·"}
+	if sheets != "" {
+		parts = append(parts, sheets)
+	}
+	if s.kb != nil {
+		kbText := "база знаний инстанса — правила, описания таблиц, готовые запросы."
+		if sheets != "" {
+			kbText = "Здесь же " + kbText
+		}
+		parts = append(parts, kbText)
+	}
+	parts = append(parts, "names — список имён за один вызов; без names — список.")
+	if u.api {
+		parts = append(parts, "Прочитай перед первым вызовом к таргету.")
+	} else {
+		parts = append(parts, "Прочитай перед первым вызовом.")
+	}
+	return strings.Join(parts, " ")
 }
 
 // sheetURI maps a name the caller knows to the resource behind it. A write
@@ -82,9 +124,9 @@ func (s ToolsService) helpDescription() string {
 func sheetURI(name string) string {
 	switch name {
 	case sheetCode, sheetDB, sheetFiles:
-		return "tools/" + name + ".md"
+		return sheetDirTools + "/" + name + ".md"
 	default:
-		return "targets/" + strings.TrimSuffix(name, "-rw") + ".md"
+		return sheetDirTargets + "/" + strings.TrimSuffix(name, "-rw") + ".md"
 	}
 }
 
@@ -118,6 +160,25 @@ func (s ToolsService) sheetDescription(name string) (string, bool) {
 func (s ToolsService) sheetText(name string) string {
 	text, _ := s.readSheet(name)
 	return text
+}
+
+// ReservedSheetNames are the names help answers to before any knowledge pack
+// is consulted: the sheets of the tool families and every target of the
+// catalogue. A topic of a pack may not take one — help(["db"]) has to keep
+// meaning the sheet on databases.
+func ReservedSheetNames(cat *target.Catalog) []string {
+	out := []string{sheetCode, sheetDB, sheetFiles}
+	if cat == nil {
+		return out
+	}
+	for name := range cat.Profiles {
+		out = append(out, name)
+	}
+	for name := range cat.Databases {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func hasCodeTool(acc target.Access) bool {
@@ -169,7 +230,60 @@ func (s ToolsService) sheetNames(acc target.Access) []HelpSheet {
 			out = append(out, HelpSheet{Name: name, Description: desc})
 		}
 	}
+	if s.kb != nil {
+		for _, r := range s.kb.Listing(s.topicVisible(acc)) {
+			out = append(out, HelpSheet{Name: r.Name, Description: r.Description, Count: r.Count})
+		}
+	}
 	return out
+}
+
+// topicVisible is the rule of the knowledge pack: the pack belongs to the
+// instance, so a caller who passed the door reads all of it — except the notes
+// on a database, which follow the database, as the db sheet does.
+func (s ToolsService) topicVisible(acc target.Access) func(kb.Topic) bool {
+	return func(t kb.Topic) bool {
+		if t.Source == "" {
+			return true
+		}
+		tgt, ok := s.kb.Sources()[t.Source]
+		return ok && acc.HasDatabase(tgt)
+	}
+}
+
+// helpTopic answers one name from the knowledge pack: a topic's text, or the
+// entries of a directory. ok is false when the pack has nothing visible under
+// that name, so the refusal can stay the same for both.
+func (s ToolsService) helpTopic(acc target.Access, name string) (item HelpItem, ok bool) {
+	if s.kb == nil {
+		return HelpItem{}, false
+	}
+	visible := s.topicVisible(acc)
+	if s.kb.IsDir(name) {
+		for _, t := range s.kb.Dir(name) {
+			if visible(t) {
+				item.Entries = append(item.Entries, HelpSheet{Name: t.Name, Description: t.Description})
+			}
+		}
+		return item, len(item.Entries) > 0
+	}
+	t, found := s.kb.Lookup(name)
+	if !found || !visible(t) {
+		return HelpItem{}, false
+	}
+	data, mimeType, err := s.kb.Read(t)
+	switch {
+	case err != nil:
+		item.Error = &ToolError{Code: ErrCodeTopicUnreadable, Message: "read " + t.URI + ": " + err.Error()}
+	case !mcp.IsTextualMIME(mimeType) || !utf8.Valid(data):
+		// A picture or an archive pushed through a JSON string comes back as
+		// U+FFFD; resources/read sends it as a blob.
+		item.Error = &ToolError{Code: ErrCodeTopicUnreadable, Message: fmt.Sprintf("%s is %s, not text: read it with resources/read %s", t.Name, mimeType, t.URI)}
+	default:
+		item.Text = string(data)
+		kb.RecordRead(t)
+	}
+	return item, true
 }
 
 // callHelp answers with the sheets asked for, or the list. Audited like every
@@ -211,20 +325,27 @@ func (s ToolsService) callHelp(ctx context.Context, arguments map[string]any) mc
 	for i, name := range asked {
 		out.Results[i] = HelpItem{Index: i, Name: name}
 
-		text, ok := s.readSheet(name)
-		if !ok || !s.canRead(acc, name) {
-			observe(ToolHelp, "-", outcomeBadArgs)
-			out.Results[i].Error = &ToolError{
-				Code:    ErrCodeSheetUnknown,
-				Message: fmt.Sprintf("no cheat sheet %q for your role", name),
-				Sheets:  sheetList(sheets),
-			}
+		// The built-in sheets first: a pack may not take their names, and
+		// help(["db"]) keeps meaning the sheet on databases.
+		if text, ok := s.readSheet(name); ok && s.canRead(acc, name) {
+			// Reported under the name the caller wrote, not the file's:
+			// youtrack-rw asked, youtrack-rw answered.
+			observe(ToolHelp, "-", outcomeOK)
+			out.Results[i].Text = text + s.liveFacts(acc, name)
 			continue
 		}
-		// Reported under the name the caller wrote, not the file's: youtrack-rw
-		// asked, youtrack-rw answered.
-		observe(ToolHelp, "-", outcomeOK)
-		out.Results[i].Text = text + s.liveFacts(acc, name)
+		if item, ok := s.helpTopic(acc, name); ok {
+			item.Index, item.Name = i, name
+			out.Results[i] = item
+			observe(ToolHelp, "-", outcomeOK)
+			continue
+		}
+		observe(ToolHelp, "-", outcomeBadArgs)
+		out.Results[i].Error = &ToolError{
+			Code:    ErrCodeSheetUnknown,
+			Message: fmt.Sprintf("no cheat sheet %q for your role", name),
+			Sheets:  sheetList(sheets),
+		}
 	}
 	rec.Path = strings.Join(asked, ",")
 	rec.Decision, rec.DenyReason = audit.DecisionAllow, ""

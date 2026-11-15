@@ -34,7 +34,15 @@ func (t apiCallTool) Name() string { return ToolAPICall }
 
 func (t apiCallTool) allow(ctx context.Context) (target.Access, bool) {
 	acc, err := t.s.access(ctx)
-	return acc, err == nil && acc.HasTool(ToolAPICall)
+	return acc, err == nil && apiCallGranted(acc)
+}
+
+// apiCallGranted is the one condition that both lists api_call and lets a call
+// through: the role names the tool and at least one profile to call. Without
+// the second half a role with "*" tools on a catalogue of databases alone would
+// be offered a tool whose list of targets is empty.
+func apiCallGranted(acc target.Access) bool {
+	return acc.HasTool(ToolAPICall) && len(acc.Targets) > 0
 }
 
 func (t apiCallTool) Visible(ctx context.Context) bool {

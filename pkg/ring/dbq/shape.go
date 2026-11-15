@@ -48,7 +48,7 @@ func (m *Manager) shape(ctx context.Context, e *entry, req Request, res *Result,
 		return nil, &Error{Kind: FailUpstream, Err: fmt.Errorf("encode result: %w", err)}
 	}
 
-	limit := ring.PickLimit(req.MaxBytes, e.MaxBytes, m.opts.MaxBytes)
+	limit := m.answerLimit(e, req)
 	shaped, err := ring.ShapeJSON(ctx, raw, req.JQ, m.opts.JQTimeout, e.Redact, e.RedactRules, limit)
 	if err != nil {
 		return nil, &Error{Kind: FailJQ, Err: err, Keys: ring.TopLevelKeys(raw)}

@@ -84,6 +84,10 @@ type Target struct {
 	// grant and a missing table the same sentence.
 	Database string
 	Schemas  []string
+	// MaxConcurrent is the size of the client's pool: how many calls the
+	// manager lets reach the client at once. Zero is DefaultPoolSize, the same
+	// default the clients take.
+	MaxConcurrent int
 }
 
 // State is where a target stands with its proof.
@@ -117,6 +121,9 @@ const (
 type Error struct {
 	Kind string
 	Err  error
+	// Waited is how long the call queued for a free connection before it
+	// failed: not the server's time, and not the caller's to pay for.
+	Waited time.Duration
 	// Keys are the top-level keys of the answer when a jq expression found
 	// nothing, or the table names when a table was not found: the next attempt
 	// needs to know what was actually there.
@@ -152,6 +159,9 @@ type Answer struct {
 	Redacted     redact.Result
 	RowsReturned int
 	Elapsed      time.Duration
+	// Waited is how long the query queued for a free connection: the time
+	// before Elapsed began.
+	Waited time.Duration
 }
 
 // Options configure the manager.
@@ -185,6 +195,11 @@ type Manager struct {
 type entry struct {
 	Target
 	state State
+	// slots admits as many calls as the pool has connections. A call takes a
+	// slot before any of its clocks start: queued inside the pool instead, it
+	// would spend its timeout waiting for a connection and reach the server
+	// late, or never.
+	slots chan struct{}
 }
 
 // declared is the scope the catalogue gave this target, as one list: the schemas
@@ -232,10 +247,27 @@ func (e *entry) emptyNote(scope Scope) string {
 // DefaultRetryAfter is how long an unproven target waits between probes.
 const DefaultRetryAfter = time.Minute
 
-// resultBudget is the most a query may pull off the wire before it is cancelled.
-// The answer itself is cut to MaxBytes afterwards; the budget is what keeps one
-// call from reading a table into the memory of the only MCP gateway.
-const resultBudget = 4 * ring.MaxAnswerBytes
+// minReadBudget is the floor of what a query may pull off the wire before it is
+// cancelled: the budget every target had before it could be given a bigger
+// answer, and still the one of every target whose answer is a quarter megabyte
+// or less.
+const minReadBudget = 4 * ring.MaxAnswerBytes
+
+// readBudget is the most a query may pull off the wire, for an answer capped at
+// limit. The answer is cut to its limit afterwards; the budget is what keeps one
+// call from reading a table into the memory of the only MCP gateway. A fixed
+// megabyte did that, and also failed a wide answer that fit its limit: a target
+// allowed a megabyte answered "more than 1048576 bytes read" — an error, not a
+// cut — before the answer limit ever had its say.
+//
+// Twice the limit: the values come off the wire at about the size of their JSON
+// or less (no quotes, no commas, no escapes), so a full answer fits, with room
+// for a jq that keeps half of what it reads. It stays bounded — one statement
+// holds at most twice what the operator allowed it to answer — and the floor
+// keeps every target as it was.
+func readBudget(limit int) int {
+	return max(minReadBudget, 2*limit)
+}
 
 // NewManager makes an empty manager; targets are added one by one.
 func NewManager(opts Options) *Manager {
@@ -271,10 +303,42 @@ func (m *Manager) Add(t Target) error {
 	if t.Driver == target.DriverPostgres && len(t.Schemas) == 0 {
 		t.Schemas = []string{target.DefaultSchema}
 	}
+	if t.MaxConcurrent <= 0 {
+		t.MaxConcurrent = DefaultPoolSize
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.targets[t.Name] = &entry{Target: t, state: State{Reason: "not probed yet", Tables: -1}}
+	m.targets[t.Name] = &entry{
+		Target: t, state: State{Reason: "not probed yet", Tables: -1},
+		slots: make(chan struct{}, t.MaxConcurrent),
+	}
 	return nil
+}
+
+// acquire waits for a free connection of the target. Only the caller's context
+// bounds the wait — the target's timeout is the server's time on the query and
+// starts once the query has a connection.
+func (m *Manager) acquire(ctx context.Context, e *entry) (release func(), waited time.Duration, ferr *Error) {
+	started := m.opts.Now()
+	select {
+	case e.slots <- struct{}{}:
+		return func() { <-e.slots }, m.opts.Now().Sub(started), nil
+	case <-ctx.Done():
+		waited = m.opts.Now().Sub(started)
+		return nil, waited, &Error{Kind: FailTimeout, Waited: waited,
+			Err: fmt.Errorf("gave up after %s waiting for a free connection to %q: %w", waited.Round(time.Millisecond), e.Name, ctx.Err())}
+	}
+}
+
+// Width is how many calls a target serves at once: the size of its pool. A
+// batch wider than this would queue behind itself.
+func (m *Manager) Width(name string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if e, ok := m.targets[name]; ok {
+		return cap(e.slots)
+	}
+	return 1
 }
 
 // Names lists the targets in order.
@@ -368,6 +432,11 @@ func (m *Manager) proveOnce(ctx context.Context, name string) error {
 		return fmt.Errorf("unknown database %q", name)
 	}
 
+	release, _, ferr := m.acquire(ctx, e)
+	if ferr != nil {
+		return ferr
+	}
+	defer release()
 	pctx, cancel := context.WithTimeout(ctx, e.Timeout)
 	defer cancel()
 	proof, err := e.Client.ProveReadOnly(pctx)
@@ -489,6 +558,12 @@ func (m *Manager) driverOf(name string) (string, bool) {
 	return e.Driver, true
 }
 
+// answerLimit is the answer cap of one request: the call's max_bytes against
+// the target's and the instance's (ring.PickLimit).
+func (m *Manager) answerLimit(e *entry, req Request) int {
+	return ring.PickLimit(req.MaxBytes, e.MaxBytes, m.opts.MaxBytes)
+}
+
 // Query checks the text, wraps it, runs it and shapes the answer. The text is
 // checked before the target is proved: a refusal that needs no server should not
 // wait for one.
@@ -514,23 +589,36 @@ func (m *Manager) Query(ctx context.Context, name string, req Request) (*Answer,
 	limit := maxRows + 1
 	sql := WrapLimit(e.Driver, req.SQL, limit)
 
+	release, waited, ferr := m.acquire(ctx, e)
+	if ferr != nil {
+		return nil, ferr
+	}
+	defer release()
 	// The context gets a second over the server's own cap, so the server's
 	// timeout fires first and its text — not a cancelled socket — is what the
 	// model reads.
 	qctx, cancel := context.WithTimeout(ctx, e.Timeout+time.Second)
 	defer cancel()
 	started := m.opts.Now()
-	res, err := e.Client.Query(qctx, Statement{SQL: sql, MaxRows: limit, MaxBytes: resultBudget, Timeout: e.Timeout, Caller: req.Caller})
+	res, err := e.Client.Query(qctx, Statement{SQL: sql, MaxRows: limit, MaxBytes: readBudget(m.answerLimit(e, req)), Timeout: e.Timeout, Caller: req.Caller})
 	elapsed := m.opts.Now().Sub(started)
 	if err != nil {
-		return nil, m.classify(e, err)
+		out := m.classify(e, err)
+		out.Waited = waited
+		return nil, out
 	}
 
 	truncated := len(res.Rows) > maxRows
 	if truncated {
 		res.Rows = res.Rows[:maxRows]
 	}
-	return m.shape(ctx, e, req, res, truncated, elapsed)
+	answer, ferr := m.shape(ctx, e, req, res, truncated, elapsed)
+	if ferr != nil {
+		ferr.Waited = waited
+		return nil, ferr
+	}
+	answer.Waited = waited
+	return answer, nil
 }
 
 // Tables lists what the target has.
@@ -539,6 +627,11 @@ func (m *Manager) Tables(ctx context.Context, name string) ([]Table, *Error) {
 	if ferr != nil {
 		return nil, ferr
 	}
+	release, _, ferr := m.acquire(ctx, e)
+	if ferr != nil {
+		return nil, ferr
+	}
+	defer release()
 	qctx, cancel := context.WithTimeout(ctx, e.Timeout+time.Second)
 	defer cancel()
 	tables, err := e.Client.Tables(qctx)
@@ -563,6 +656,11 @@ func (m *Manager) DiagnoseEmpty(ctx context.Context, name string) (Diagnosis, *E
 	if ferr != nil {
 		return Diagnosis{}, ferr
 	}
+	release, _, ferr := m.acquire(ctx, e)
+	if ferr != nil {
+		return Diagnosis{}, ferr
+	}
+	defer release()
 	qctx, cancel := context.WithTimeout(ctx, e.Timeout+time.Second)
 	defer cancel()
 	scope, err := e.Client.Scope(qctx)
@@ -585,6 +683,11 @@ func (m *Manager) Introspect(ctx context.Context, name, table string) (*Schema, 
 	if ferr != nil {
 		return nil, ferr
 	}
+	release, _, ferr := m.acquire(ctx, e)
+	if ferr != nil {
+		return nil, ferr
+	}
+	defer release()
 	qctx, cancel := context.WithTimeout(ctx, e.Timeout+time.Second)
 	defer cancel()
 	if ferr := m.checkScope(qctx, e, table); ferr != nil {

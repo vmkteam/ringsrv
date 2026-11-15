@@ -120,10 +120,13 @@ func TestMCPConformance(t *testing.T) {
 					assert.True(t, len(r.URI) > len(md.URIScheme) && r.URI[:len(md.URIScheme)] == md.URIScheme,
 						"%s carries this service's scheme", r.URI)
 				}
-				assert.Contains(t, uris, "ringsrv://tools/db.md")
-				assert.Contains(t, uris, "ringsrv://tools/code.md")
+				assert.Contains(t, uris, "ringsrv://targets/prom.md")
+				// The sheets follow the instance: this one has neither databases
+				// nor code, and does not list sheets about them.
+				assert.NotContains(t, uris, "ringsrv://tools/db.md")
+				assert.NotContains(t, uris, "ringsrv://tools/code.md")
 
-				data := c.ReadResource(t, "ringsrv://tools/db.md")
+				data := c.ReadResource(t, "ringsrv://targets/prom.md")
 				require.Len(t, data.Contents, 1)
 				assert.NotEmpty(t, data.Contents[0].Text)
 			})

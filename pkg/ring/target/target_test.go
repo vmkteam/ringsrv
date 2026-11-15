@@ -681,6 +681,43 @@ Targets     = ["*", "pg"]
 	assert.Equal(t, []string{"pg"}, named.Databases)
 }
 
+// A catalogue of databases alone is an instance for data questions: it loads,
+// and a role on it resolves to databases with no profile to call. A catalogue
+// with neither is refused — it would start and serve nothing.
+func TestDatabases_CatalogueWithoutProfiles(t *testing.T) {
+	t.Parallel()
+	c, err := Parse([]byte(dbOnlyTOML))
+	require.NoError(t, err)
+	assert.Empty(t, c.Profiles)
+
+	acc := c.Resolve([]string{"data-readers"})
+	assert.Empty(t, acc.Targets, "no profile to grant, the wildcard included")
+	assert.Equal(t, []string{"events"}, acc.Databases)
+	assert.True(t, acc.HasTool("api_call"), "the wildcard still names the tool; rpc decides it has nothing to call")
+
+	_, err = Parse([]byte("Env = \"prod\"\n"))
+	require.ErrorContains(t, err, "no [Profiles.*] or [Databases.*] defined")
+}
+
+// dbOnlyTOML is a catalogue with one database and no profile at all.
+const dbOnlyTOML = `
+Env = "prod"
+
+[Databases.events]
+Description = "prod · ClickHouse events"
+Driver      = "clickhouse"
+Addr        = "ch.example.com:9000"
+Database    = "events"
+User        = "ringsrv_ro"
+Password    = "secret"
+
+[Roles.data]
+Description = "data questions"
+Groups      = ["data-readers"]
+Tools       = ["*"]
+Targets     = ["*", "events"]
+`
+
 // The twenty-four ways a database section can be wrong without failing on its
 // own — each would surface hours later as a first query that looks like a
 // network fault.

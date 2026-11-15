@@ -29,6 +29,19 @@ GroupsClaim   = "groups"
 [Catalog]
 Path      = "cfg/targets.toml"
 
+# The knowledge pack: rules of the domain, notes on tables, prompts and the
+# instance's own instructions, served through help, db_introspect, resources and
+# prompts (see cfg/README.md, "Knowledge pack"). Checked whole at boot and by
+# -check-config. docs/kb-example is an example against the example catalogue.
+# [Knowledge]
+# Dir       = "docs/kb-example"
+# URIScheme = "kb://shop/"
+# FoldOver  = 15
+#
+# [Knowledge.Sources]   # the source of schema/<source>/ → a [Databases.*] target
+# orders = "orders-pg"
+# events = "events-ch"
+
 # Clones, worktrees and AST indexes.
 #
 # These paths are deliberately outside the project directory: a worktree holds

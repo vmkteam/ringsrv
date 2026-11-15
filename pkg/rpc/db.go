@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vmkteam/ringsrv/pkg/ring/dbq"
+	"github.com/vmkteam/ringsrv/pkg/ring/kb"
 	"github.com/vmkteam/ringsrv/pkg/ring/target"
 
 	"github.com/vmkteam/mcpkit/audit"
@@ -38,7 +41,7 @@ type DBQueryArgs struct {
 	// Queries is short because most of what the log shows is drill-down: the
 	// next statement is written after reading the previous answer.
 	Queries  []DBQuery `json:"queries" jsonschema:"required" jsonschema_description:"Independent read statements, up to 5. One query is a list of one."`
-	MaxBytes int       `json:"max_bytes,omitempty" jsonschema_description:"Budget in bytes for the whole batch; max 262144."`
+	MaxBytes int       `json:"max_bytes,omitempty" jsonschema_description:"Answer cap per statement, bytes; the default and the ceiling are the base's."`
 	Intent   string    `json:"intent,omitempty" jsonschema_description:"Why, <=120 chars; audited."`
 }
 
@@ -109,6 +112,10 @@ type DBTable struct {
 	Kind         string `json:"kind"`
 	RowsEstimate int64  `json:"rows_estimate"`
 	Comment      string `json:"comment,omitempty"`
+	// Purpose is the knowledge pack's line on the table, given when the
+	// database has no comment of its own; Doc names the note for help.
+	Purpose string `json:"purpose,omitempty"`
+	Doc     string `json:"doc,omitempty"`
 }
 
 // DBSchemaBatch is db_introspect with tables: one schema per name, in the order
@@ -146,6 +153,32 @@ type DBSchemaResult struct {
 	// Code points at the repository whose db layer describes these tables: the
 	// enums live there, not in the database.
 	Code *DBCode `json:"code,omitempty"`
+	// Doc is the knowledge pack's note on the table: what it is for and what
+	// one row is. The database knows the shape, the note the meaning — and a
+	// note can go stale, which is why it never overwrites a field the database
+	// reported.
+	Doc *DBDoc `json:"doc,omitempty"`
+}
+
+// DBDoc is the note on a table from the knowledge pack.
+type DBDoc struct {
+	// Topic is the full text of the note, through help.
+	Topic     string   `json:"topic"`
+	Purpose   string   `json:"purpose,omitempty"`
+	Grain     string   `json:"grain,omitempty"`
+	Notes     []string `json:"notes,omitempty"`
+	Relations []string `json:"relations,omitempty"`
+	// Unmatched names the columns the note describes and the table does not
+	// have: a column renamed by a migration keeps its description under the old
+	// name, and the model should see the two disagree.
+	Unmatched []string `json:"unmatched,omitempty"`
+}
+
+// DBColumnDoc is the note on one column.
+type DBColumnDoc struct {
+	Description string   `json:"description,omitempty"`
+	Enum        []string `json:"enum,omitempty"`
+	Rel         string   `json:"rel,omitempty"`
 }
 
 // DBColumn is one column of a table.
@@ -155,6 +188,9 @@ type DBColumn struct {
 	Nullable bool     `json:"nullable"`
 	Comment  string   `json:"comment,omitempty"`
 	Enum     []string `json:"enum,omitempty"`
+	// Doc is the knowledge pack's note on the column, beside what the database
+	// said rather than over it.
+	Doc *DBColumnDoc `json:"doc,omitempty"`
 }
 
 // DBRelation is a foreign key.
@@ -193,7 +229,7 @@ func (s ToolsService) dbToolsVisible(acc target.Access, tool string) bool {
 // rules its catalogue entry carries.
 func (s ToolsService) dbQueryDescription(acc target.Access) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s · readonly SQL к базе из списка; диалект — по базе. queries — до %d запросов к одной базе подряд; после первой ошибки остальные skipped. Один запрос — список из одного.\n\nБазы:\n",
+	fmt.Fprintf(&b, "%s · readonly SQL к базе из списка; диалект — по базе. queries — до %d запросов к одной базе, выполняются параллельно; после первой ошибки ещё не начатые — skipped. Один запрос — список из одного.\n\nБазы:\n",
 		strings.ToUpper(s.env), maxDBQueryBatch)
 	for _, name := range acc.Databases {
 		d, ok := s.targets.Database(name)
@@ -218,9 +254,42 @@ func (s ToolsService) emptyMark(name string) string {
 	return " [сейчас 0 таблиц]"
 }
 
+// dbIntrospectDescription names what an answer can carry on this instance: the
+// pointer to the code only where a database names a repository, the note from
+// the knowledge pack only where there is a pack.
 func (s ToolsService) dbIntrospectDescription() string {
-	return fmt.Sprintf("%s · схема из базы: без tables — список таблиц; с tables (до %d имён за вызов) — колонки, ключи, enum'ы, указатель на код. target — из db_query.",
-		strings.ToUpper(s.env), maxIntrospectBatch)
+	extras := []string{"колонки", "ключи", "enum'ы"}
+	if s.dbCodeRefs() {
+		extras = append(extras, "указатель на код")
+	}
+	if s.kb != nil && s.kbHasNotes() {
+		extras = append(extras, "описание из базы знаний (doc)")
+	}
+	return fmt.Sprintf("%s · схема из базы: без tables — список таблиц; с tables (до %d имён за вызов) — %s. target — из db_query.",
+		strings.ToUpper(s.env), maxIntrospectBatch, strings.Join(extras, ", "))
+}
+
+// dbCodeRefs reports whether any database of the catalogue points at code.
+func (s ToolsService) dbCodeRefs() bool {
+	if s.targets == nil {
+		return false
+	}
+	for _, d := range s.targets.Databases {
+		if len(d.Repo) > 0 || len(d.SchemaRepos) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// kbHasNotes reports whether the pack describes a table of any database.
+func (s ToolsService) kbHasNotes() bool {
+	for _, tgt := range s.kb.Sources() {
+		if len(s.kb.Tables(tgt)) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // dbTarget resolves the role and the target for a database tool, writing the
@@ -292,24 +361,59 @@ func (s ToolsService) callDBQuery(ctx context.Context, arguments map[string]any)
 		rec.DenyReason = ErrCodeBadArgs
 		return errResult(ToolError{Code: ErrCodeBadArgs, Message: "invalid arguments: " + err.Error(), Env: s.env})
 	}
-	out := DBQueryBatch{Env: s.env, Driver: d.Driver, TraceID: rec.TraceID, Results: make([]DBQueryItem, len(args.Queries))}
-	for i, q := range args.Queries {
-		out.Results[i] = s.oneDBQuery(ctx, args, q, i, rec)
-		if out.Results[i].Error != nil {
-			// The tail is not run: continuing one line of reasoning after the
-			// premise failed costs the database work nobody will use.
-			for j := i + 1; j < len(args.Queries); j++ {
-				out.Results[j] = DBQueryItem{Index: j, Skipped: true}
-			}
-			break
-		}
-	}
+	out := DBQueryBatch{Env: s.env, Driver: d.Driver, TraceID: rec.TraceID}
+	out.Results = s.runQueries(ctx, args, rec)
 	out.Budget = budgetOf(ctx)
 
 	rec.Decision, rec.DenyReason = audit.DecisionAllow, ""
 	res := okResultJSON(out, s.env)
 	rec.BytesOut = res.Size()
 	return res
+}
+
+// runQueries runs the statements of one call as many at once as the base has
+// connections, and no more: a batch wider than the pool would queue behind
+// itself. They start in the order sent — an earlier statement is never left
+// out for a later one — and once one fails, those not yet started are not
+// started: continuing one line of reasoning after its premise failed costs the
+// database work nobody will use. One already running is let finish; cancelling
+// it would cost the same and answer less.
+func (s ToolsService) runQueries(ctx context.Context, args DBQueryArgs, rec *auditRecord) []DBQueryItem {
+	out := make([]DBQueryItem, len(args.Queries))
+	slots := make(chan struct{}, max(1, min(len(args.Queries), s.db.Width(args.Target))))
+	var (
+		failed atomic.Bool
+		wg     sync.WaitGroup
+	)
+	for i, q := range args.Queries {
+		slots <- struct{}{}
+		if failed.Load() {
+			<-slots
+			out[i] = DBQueryItem{Index: i, Skipped: true}
+			continue
+		}
+		wg.Go(func() {
+			// Released last: the failure is recorded before the next statement
+			// may look at it.
+			defer func() { <-slots }()
+			// The request middleware recovers the goroutine it serves on, and
+			// this is not that goroutine.
+			defer func() {
+				if p := recover(); p != nil {
+					failed.Store(true)
+					out[i] = DBQueryItem{Index: i, Error: &ToolError{Code: ErrCodeUpstream, Message: fmt.Sprintf("internal error: %v", p)}}
+				}
+			}()
+			item := s.oneDBQuery(ctx, args, q, i, rec)
+			if item.Error != nil {
+				failed.Store(true)
+			}
+			// Each goroutine owns out[i]: no two indices overlap, no lock.
+			out[i] = item
+		})
+	}
+	wg.Wait()
+	return out
 }
 
 // auditRefusedQueries writes one record per statement of a batch that was
@@ -338,15 +442,25 @@ func (s ToolsService) oneDBQuery(ctx context.Context, args DBQueryArgs, q DBQuer
 		SQL: q.SQL, MaxRows: q.MaxRows, JQ: q.JQ, MaxBytes: args.MaxBytes, Caller: caller,
 	})
 	// Each statement is billed on its own: a batch that ran five did five
-	// statements' worth of work, whatever the wall clock says. The label is the
-	// database dbTarget resolved before the batch ran, never the caller's word.
-	ratelimit.ChargeFor(ctx, args.Target, time.Since(started))
+	// statements' worth of work, whatever the wall clock says. The time it
+	// queued for a connection is not work and not the caller's to pay for. The
+	// label is the database dbTarget resolved before the batch ran, never the
+	// caller's word.
+	var waited time.Duration
+	switch {
+	case ferr != nil:
+		waited = ferr.Waited
+	case answer != nil:
+		waited = answer.Waited
+	}
+	spent := time.Since(started) - waited
+	ratelimit.ChargeFor(ctx, args.Target, spent)
 	if ferr != nil {
 		terr := s.dbError(ctx, ToolDBQuery, args.Target, ferr, rec)
-		observeDBQuery(args.Target, time.Since(started), outcomeOf(terr.Code))
+		observeDBQuery(args.Target, spent, outcomeOf(terr.Code))
 		return DBQueryItem{Index: index, Error: terr}
 	}
-	observeDBQuery(args.Target, time.Since(started), outcomeOK)
+	observeDBQuery(args.Target, spent, outcomeOK)
 
 	observe(ToolDBQuery, args.Target, outcomeOK)
 	observeRedactions(args.Target, answer.Redacted)
@@ -420,7 +534,7 @@ func (s ToolsService) dbTableList(ctx context.Context, d *target.Database, name 
 		e.Env = s.env
 		return errResult(e)
 	}
-	out := s.newTablesResult(d, tables)
+	out := s.newTablesResult(d, name, tables)
 	if len(tables) == 0 {
 		s.explainEmpty(ctx, name, &out)
 	}
@@ -444,11 +558,11 @@ func (s ToolsService) oneDBSchema(ctx context.Context, d *target.Database, args 
 	}
 	observe(ToolDBIntrospect, args.Target, outcomeOK)
 	rec.Decision, rec.DenyReason = audit.DecisionAllow, ""
-	out := s.newSchemaResult(d, schema)
+	out := s.newSchemaResult(d, args.Target, schema)
 	return DBSchemaItem{Index: index, Table: table, Schema: &out}
 }
 
-func (s ToolsService) newTablesResult(d *target.Database, tables []dbq.Table) DBTablesResult {
+func (s ToolsService) newTablesResult(d *target.Database, name string, tables []dbq.Table) DBTablesResult {
 	// Schemas is what the catalogue wrote down — the default included — and
 	// empty for a driver without schemas.
 	out := DBTablesResult{
@@ -457,8 +571,42 @@ func (s ToolsService) newTablesResult(d *target.Database, tables []dbq.Table) DB
 	}
 	for i, t := range tables {
 		out.Tables[i] = DBTable{Schema: t.Schema, Name: t.Name, Kind: t.Kind, RowsEstimate: t.RowsEstimate, Comment: t.Comment}
+		if note, ok := s.tableNote(name, t.Schema, t.Name); ok {
+			out.Tables[i].Doc = note.Topic
+			if t.Comment == "" {
+				out.Tables[i].Purpose = note.Purpose
+			}
+		}
 	}
 	return out
+}
+
+// tableNote finds the knowledge pack's note on a table of a target. The name
+// is qualified with the schema it was found in, so that a base with two tables
+// of one name in two schemas gets the right note or none.
+func (s ToolsService) tableNote(target, schema, table string) (*kb.Table, bool) {
+	if s.kb == nil {
+		return nil, false
+	}
+	if schema != "" && !strings.Contains(table, ".") {
+		table = schema + "." + table
+	}
+	return s.kb.Annotation(target, table)
+}
+
+// attachDoc puts the note on a table beside its schema, column by column.
+func attachDoc(out *DBSchemaResult, note *kb.Table) {
+	names := make([]string, len(out.Columns))
+	for i := range out.Columns {
+		names[i] = out.Columns[i].Name
+		if c, ok := note.Column(out.Columns[i].Name); ok {
+			out.Columns[i].Doc = &DBColumnDoc{Description: c.Description, Enum: c.Enum, Rel: c.Rel}
+		}
+	}
+	out.Doc = &DBDoc{
+		Topic: note.Topic, Purpose: note.Purpose, Grain: note.Grain,
+		Notes: note.Notes, Relations: note.Relations, Unmatched: note.Unmatched(names),
+	}
 }
 
 // explainEmpty asks the server what this role can see and turns the answer into
@@ -476,7 +624,7 @@ func (s ToolsService) explainEmpty(ctx context.Context, name string, out *DBTabl
 
 // newSchemaResult maps the domain's schema and attaches the pointer to the code:
 // the layer from the catalogue and the search that finds the model.
-func (s ToolsService) newSchemaResult(d *target.Database, schema *dbq.Schema) DBSchemaResult {
+func (s ToolsService) newSchemaResult(d *target.Database, name string, schema *dbq.Schema) DBSchemaResult {
 	out := DBSchemaResult{
 		Table: schema.Table, Comment: schema.Comment,
 		Columns: make([]DBColumn, len(schema.Columns)), PrimaryKey: schema.PrimaryKey,
@@ -500,6 +648,9 @@ func (s ToolsService) newSchemaResult(d *target.Database, schema *dbq.Schema) DB
 		for i, r := range refs {
 			out.Code.Repos[i] = DBCodeRepo{Repo: r.Repo, Layer: r.Layer}
 		}
+	}
+	if note, ok := s.tableNote(name, schema.Schema, schema.Table); ok {
+		attachDoc(&out, note)
 	}
 	return out
 }

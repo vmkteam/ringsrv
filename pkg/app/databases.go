@@ -67,6 +67,9 @@ func (a *App) newDBTarget(name string, d *target.Database) (dbq.Target, error) {
 		// The declared scope travels with the target: what a refusal names, and
 		// what the probe compares the server's grants against.
 		Database: d.Database, Schemas: d.Schemas,
+		// The pool size, so that the manager admits no more calls than the
+		// pool has connections: a call never spends its timeout queueing.
+		MaxConcurrent: d.MaxConcurrent,
 	}
 	if t.MaxRows <= 0 {
 		t.MaxRows = a.cfg.Limits.DBMaxRows

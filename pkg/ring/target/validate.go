@@ -99,8 +99,10 @@ func (c *Catalog) Validate() error {
 	default:
 		errs = append(errs, fmt.Errorf("field Env must be %s or %s, got %q", EnvDev, EnvProd, c.Env))
 	}
-	if len(c.Profiles) == 0 {
-		errs = append(errs, errors.New("no [Profiles.*] defined"))
+	// A catalogue of databases alone is an instance for data questions: no
+	// api_call, nothing to proxy. One with neither has nothing to serve.
+	if len(c.Profiles) == 0 && len(c.Databases) == 0 {
+		errs = append(errs, errors.New("no [Profiles.*] or [Databases.*] defined"))
 	}
 	for _, h := range c.Defaults.Headers {
 		if err := validateHeader(h); err != nil {
@@ -126,39 +128,46 @@ func (c *Catalog) Validate() error {
 		}
 	}
 	for _, name := range sortedKeys(c.Repos) {
-		// The name becomes a directory under Storage.ReposDir, so a slash here
-		// would put a clone somewhere nobody looks for it.
-		if !repoNameRe.MatchString(name) {
-			errs = append(errs, fmt.Errorf("[Repos.%s]: name must match %s — it becomes a directory", name, repoNameRe))
-		}
-		if err := c.Repos[name].validate(); err != nil {
-			errs = append(errs, fmt.Errorf("[Repos.%s]: %w", name, err))
-		}
-		if err := c.resolveCloneTarget(c.Repos[name]); err != nil {
-			errs = append(errs, fmt.Errorf("[Repos.%s]: %w", name, err))
-		}
-		// A typo here would silently cost every `why` its enrichment, and
-		// nothing else would ever complain about it.
-		if t := c.Repos[name].IssueTarget; t != "" {
-			p, ok := c.Profiles[t]
-			if !ok {
-				errs = append(errs, fmt.Errorf("[Repos.%s]: IssueTarget %q is not a profile", name, t))
-				continue
-			}
-			// The request has to pass that profile's own allowlist, or every
-			// `why` would answer "tracker unavailable". Checked with a key
-			// shaped like the ones this repository produces.
-			if req := c.Repos[name].IssueRequest("ABC-123"); !p.Allows(http.MethodGet, req) || p.CheckQuery(req) != nil {
-				errs = append(errs, fmt.Errorf("[Repos.%s]: IssuePath %q is not allowed by profile %q (tried %s)",
-					name, c.Repos[name].IssueRequest("{id}"), t, req))
-			}
-		}
+		errs = append(errs, c.validateRepo(name)...)
 	}
 	if n := c.descriptionsSize(); n > MaxDescriptionsBytes {
 		errs = append(errs, fmt.Errorf("profile and database descriptions are %d bytes, budget is %d: they are inlined into every tools/list", n, MaxDescriptionsBytes))
 	}
 
 	return errors.Join(errs...)
+}
+
+// validateRepo checks one repository entry and its links to the profiles.
+func (c *Catalog) validateRepo(name string) []error {
+	var errs []error
+	// The name becomes a directory under Storage.ReposDir, so a slash here
+	// would put a clone somewhere nobody looks for it.
+	if !repoNameRe.MatchString(name) {
+		errs = append(errs, fmt.Errorf("[Repos.%s]: name must match %s — it becomes a directory", name, repoNameRe))
+	}
+	if err := c.Repos[name].validate(); err != nil {
+		errs = append(errs, fmt.Errorf("[Repos.%s]: %w", name, err))
+	}
+	if err := c.resolveCloneTarget(c.Repos[name]); err != nil {
+		errs = append(errs, fmt.Errorf("[Repos.%s]: %w", name, err))
+	}
+	// A typo here would silently cost every `why` its enrichment, and
+	// nothing else would ever complain about it.
+	if t := c.Repos[name].IssueTarget; t != "" {
+		p, ok := c.Profiles[t]
+		if !ok {
+			errs = append(errs, fmt.Errorf("[Repos.%s]: IssueTarget %q is not a profile", name, t))
+			return errs
+		}
+		// The request has to pass that profile's own allowlist, or every
+		// `why` would answer "tracker unavailable". Checked with a key
+		// shaped like the ones this repository produces.
+		if req := c.Repos[name].IssueRequest("ABC-123"); !p.Allows(http.MethodGet, req) || p.CheckQuery(req) != nil {
+			errs = append(errs, fmt.Errorf("[Repos.%s]: IssuePath %q is not allowed by profile %q (tried %s)",
+				name, c.Repos[name].IssueRequest("{id}"), t, req))
+		}
+	}
+	return errs
 }
 
 // validateDatabase checks one database entry. Every rule here is a mistake that

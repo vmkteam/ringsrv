@@ -8,6 +8,8 @@ import (
 	"github.com/vmkteam/ringsrv/pkg/client/upstream"
 	"github.com/vmkteam/ringsrv/pkg/ring"
 	"github.com/vmkteam/ringsrv/pkg/ring/dbq"
+	"github.com/vmkteam/ringsrv/pkg/ring/kb"
+	"github.com/vmkteam/ringsrv/pkg/ring/md"
 	"github.com/vmkteam/ringsrv/pkg/ring/target"
 
 	"github.com/vmkteam/embedlog"
@@ -27,8 +29,10 @@ import (
 // MCPDeps bundles dependencies for the MCP zenrpc server.
 type MCPDeps struct {
 	// Info is what the server tells a client about itself on initialize.
-	Info     mcp.ServerInfo
-	Docs     *doc.Library
+	Info mcp.ServerInfo
+	Docs *doc.Library
+	// KB is the knowledge pack of the instance; nil when it has none.
+	KB       *kb.Pack
 	Targets  *target.Catalog
 	Upstream *upstream.Client
 	Repos    *git.Store
@@ -95,34 +99,42 @@ func NewMCP(d MCPDeps) *zenrpc.Server {
 			Resources: &mcp.ResourcesCapability{},
 			Prompts:   &mcp.PromptsCapability{},
 		},
-		Instructions: instructions(d.Targets.Env, d.Budget),
+		Instructions: instructions(d.Targets.Env, d.Budget, d.KB),
 		CacheHint:    catalogueCache,
 	}
+
+	tools := NewToolsService(ToolsDeps{
+		Targets:       d.Targets,
+		Upstream:      d.Upstream,
+		Repos:         d.Repos,
+		Graph:         d.Graph,
+		DB:            d.DB,
+		Docs:          d.Docs,
+		KB:            d.KB,
+		MaxBytes:      d.MaxBytes,
+		MaxConcurrent: d.MaxConcurrent,
+		JQTimeout:     d.JQTimeout,
+		Sessions:      d.Sessions,
+		IsDevel:       d.IsDevel,
+		Logger:        d.Logger,
+	})
+
+	// The built-in tree and the knowledge pack, each under its own scheme. The
+	// built-in texts follow what the instance has; both are the same for
+	// everyone on the instance, so the cache hint holds.
+	cat := newCatalogue(d.Docs, md.URIScheme, d.KB, tools.surface().builtinFilter(d.Logger))
 
 	srv.RegisterAll(map[string]zenrpc.Invoker{
 		// Both eras on one endpoint: initialize for the clients that still open
 		// with a handshake, server/discover for the ones that no longer do.
 		"":                     mcpkit.NewInitService(deps),
 		mcpkit.NamespaceServer: mcpkit.NewDiscoverService(deps),
-		mcpkit.NamespaceTools: NewToolsService(ToolsDeps{
-			Targets:       d.Targets,
-			Upstream:      d.Upstream,
-			Repos:         d.Repos,
-			Graph:         d.Graph,
-			DB:            d.DB,
-			Docs:          d.Docs,
-			MaxBytes:      d.MaxBytes,
-			MaxConcurrent: d.MaxConcurrent,
-			JQTimeout:     d.JQTimeout,
-			Sessions:      d.Sessions,
-			IsDevel:       d.IsDevel,
-			Logger:        d.Logger,
-		}),
+		mcpkit.NamespaceTools:  tools,
 		// The catalogue is cacheable and the same for everyone: the markdown is
 		// embedded at build time. tools/list is not — it is filtered by role, and
 		// a public cache would hand one caller the tools of another.
-		mcpkit.NamespaceResources: mcpkit.NewResourcesService(d.Docs, mcpkit.WithResourceCache(catalogueCache)),
-		mcpkit.NamespacePrompts:   mcpkit.NewPromptsService(d.Docs, mcpkit.WithPromptCache(catalogueCache)),
+		mcpkit.NamespaceResources: mcpkit.NewResourcesService(cat, mcpkit.WithResourceCache(catalogueCache), mcpkit.WithReadHook(countKnowledgeReads(d.KB))),
+		mcpkit.NamespacePrompts:   mcpkit.NewPromptsService(cat, mcpkit.WithPromptCache(catalogueCache)),
 	})
 
 	return srv

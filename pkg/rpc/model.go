@@ -26,7 +26,7 @@ type APICallArgs struct {
 	Calls []APICall `json:"calls" jsonschema:"required" jsonschema_description:"Independent calls, run at once; results[] in this order. One call is a list of one."`
 	// MaxBytes is the budget for the whole answer rather than for each call in
 	// it: twenty calls at the per-target default would be megabytes of context.
-	MaxBytes int `json:"max_bytes,omitempty" jsonschema_description:"Budget for the whole batch, bytes; max 262144. Tighten jq first."`
+	MaxBytes int `json:"max_bytes,omitempty" jsonschema_description:"Budget for the whole batch, bytes; the default and the ceiling are the instance's. Tighten jq first."`
 }
 
 // apiCallBatchBase is APICallArgs without the headers argument: its own type so
@@ -34,7 +34,7 @@ type APICallArgs struct {
 // bytes it cannot spend.
 type apiCallBatchBase struct {
 	Calls    []apiCallBase `json:"calls" jsonschema:"required" jsonschema_description:"Independent calls, run at once; results[] in this order. One call is a list of one."`
-	MaxBytes int           `json:"max_bytes,omitempty" jsonschema_description:"Budget in bytes for the whole batch; max 262144. Tighten jq first."`
+	MaxBytes int           `json:"max_bytes,omitempty" jsonschema_description:"Budget for the whole batch, bytes; the default and the ceiling are the instance's. Tighten jq first."`
 }
 
 // APICall is one call inside the batch.
